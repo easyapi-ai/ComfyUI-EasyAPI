@@ -1,0 +1,30 @@
+{
+  "1": {
+    "class_type": "EasyAPIImages",
+    "inputs": {
+      "profile_id": "mock",
+      "model": "mock-image",
+      "operation": "image-task",
+      "prompt": "离线接口验收",
+      "params_json": "{}",
+      "wait_for_result": true,
+      "timeout": 1800
+    },
+    "_meta": {
+      "title": "EasyAPI 图片生成与编辑"
+    }
+  },
+  "2": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "EasyAPI-verify/async-image",
+      "images": [
+        "1",
+        2
+      ]
+    },
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}

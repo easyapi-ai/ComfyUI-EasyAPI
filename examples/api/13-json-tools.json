@@ -1,0 +1,29 @@
+{
+  "1": {
+    "class_type": "EasyAPIJSON",
+    "inputs": {
+      "operation": "parse",
+      "params_json": "{\"zero\":0,\"off\":false,\"nested\":[1,2]}",
+      "path": ""
+    },
+    "_meta": {
+      "title": "EasyAPI JSON 工具"
+    }
+  },
+  "2": {
+    "class_type": "EasyAPIPreview",
+    "inputs": {
+      "text": [
+        "1",
+        1
+      ],
+      "json_value": [
+        "1",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "EasyAPI 预览与输出"
+    }
+  }
+}

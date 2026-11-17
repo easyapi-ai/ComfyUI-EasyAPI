@@ -1,0 +1,34 @@
+{
+  "1": {
+    "class_type": "EasyAPINativeRequest",
+    "inputs": {
+      "profile_id": "mock",
+      "model": "mock-text",
+      "operation": "messages",
+      "prompt": "",
+      "request_body": "{\"messages\":[{\"role\":\"user\",\"content\":\"offline\"}],\"max_tokens\":16}",
+      "params_json": "{}",
+      "wait_for_result": true,
+      "timeout": 1800
+    },
+    "_meta": {
+      "title": "EasyAPI 原生创作请求"
+    }
+  },
+  "2": {
+    "class_type": "EasyAPIPreview",
+    "inputs": {
+      "text": [
+        "1",
+        0
+      ],
+      "json_value": [
+        "1",
+        1
+      ]
+    },
+    "_meta": {
+      "title": "EasyAPI 预览与输出"
+    }
+  }
+}

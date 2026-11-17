@@ -1,0 +1,110 @@
+"""Run offline workflows on the real ComfyUI instance, using only profile mock."""
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+import ssl
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--url', default='https://192.168.2.48:3443')
+    parser.add_argument('--ca', default='output/deployment/easyapi-comfy-lan-root.crt')
+    parser.add_argument('--output', default='output/verification/comfy.json')
+    parser.add_argument('--cases', default='', help='Comma-separated case names for a focused rerun')
+    args = parser.parse_args()
+    context = ssl.create_default_context(cafile=args.ca)
+    def call(path, body=None):
+        request = urllib.request.Request(args.url.rstrip('/') + path,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers={'Content-Type': 'application/json'} if body is not None else {})
+        try:
+            with urllib.request.urlopen(request, context=context, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f'{path}: HTTP {error.code}: {error.read().decode()[:3000]}') from error
+    definitions = call('/object_info')
+    profiles = call('/easyapi/profiles')['profiles']
+    mock = next(p for p in profiles if p['id'] == 'mock')
+    if mock['base_url'] != 'http://comfytv-easyapi-mock:3199':
+        raise RuntimeError('Refusing to generate: mock profile does not point to offline container')
+    def node(kind, **values):
+        inputs = {}
+        def defaults(fields, prefix=''):
+            for name, schema in fields.items():
+                key = prefix + name
+                options = schema[1] if len(schema) > 1 and isinstance(schema[1], dict) else {}
+                if 'default' in options:
+                    inputs[key] = options['default']
+                elif isinstance(schema[0], list):
+                    inputs[key] = schema[0][0]
+                elif schema[0] == 'COMBO' and options.get('options'):
+                    inputs[key] = options['options'][0]
+                elif schema[0] == 'COMFY_DYNAMICCOMBO_V3' and options.get('options'):
+                    branch = options['options'][0]
+                    inputs[key] = branch['key']
+                    defaults({**branch['inputs'].get('required', {}), **branch['inputs'].get('optional', {})}, key + '.')
+        defaults({**definitions[kind]['input'].get('required', {}), **definitions[kind]['input'].get('optional', {})})
+        inputs.update(values)
+        return {'class_type': kind, 'inputs': inputs, '_meta': {'title': definitions[kind].get('display_name', kind)}}
+    def creative(kind, operation, model, **values):
+        return node(kind, **{'profile_id': 'mock', 'model': model, 'operation': operation, 'prompt': '离线接口验收', **values})
+    def preview(source, **values):
+        return node('EasyAPIPreview', text=[source, 0], json_value=[source, 1], **values)
+    cases = {
+        '01-chat': {'1': creative('EasyAPIChat', 'chat', 'mock-text'), '2': preview('1')},
+        '02-stream': {'1': creative('EasyAPIChat', 'chat', 'mock-text', params_json='{"stream":true,"temperature":0}'), '2': preview('1')},
+        '03-image': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image', params_json='{"seed":0,"watermark":false}'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/image')},
+        '04-image-edit': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIImages', 'image-edit', 'mock-image', image=['1', 2]), '3': node('SaveImage', images=['2', 2], filename_prefix='EasyAPI-verify/edit')},
+        '05-async-image': {'1': creative('EasyAPIImages', 'image-task', 'mock-image'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/async-image')},
+        '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/video')},
+        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPIMedia', image=['1', 2], role='first_frame'), '3': node('EasyAPIMedia', image=['1', 2], references=['2', 0], role='last_frame'), '4': creative('EasyAPIVideo', 'video-generation', 'mock-video', references=['3', 0]), '5': node('SaveVideo', video=['4', 5], filename_prefix='EasyAPI-verify/reference-video')},
+        '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-audio', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
+        '09-music': {'1': creative('EasyAPISuno', 'suno-action', 'mock-music', params_json='{"action":"generate"}'), '2': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/music')},
+        '10-midjourney': {'1': creative('EasyAPIMidjourney', 'mj-imagine', 'mock-mj'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/mj')},
+        '11-native-protocol': {'1': creative('EasyAPINativeRequest', 'messages', 'mock-text', prompt='', request_body='{"messages":[{"role":"user","content":"offline"}],"max_tokens":16}'), '2': preview('1')},
+        '12-split-task': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video', wait_for_result=False), '2': node('EasyAPITaskWait', profile_id='mock', task=['1', 6]), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/task-video')},
+        '13-json-tools': {'1': node('EasyAPIJSON', operation='parse', params_json='{"zero":0,"off":false,"nested":[1,2]}'), '2': node('EasyAPIPreview', text=['1', 1], json_value=['1', 0])},
+    }
+    output = Path(args.output)
+    previous = json.loads(output.read_text(encoding='utf-8')).get('results', []) if args.cases and output.exists() else []
+    results = []
+    examples = Path('examples/api')
+    examples.mkdir(parents=True, exist_ok=True)
+    for name, graph in cases.items():
+        (examples / (name + '.json')).write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding='utf-8')
+        if args.cases and name not in args.cases.split(','):
+            continue
+        started = time.monotonic()
+        try:
+            queued = call('/prompt', {'prompt': graph, 'client_id': 'easyapi-verification-' + uuid.uuid4().hex})
+            prompt_id = queued['prompt_id']
+            while time.monotonic() - started < 100:
+                histories = call('/history/' + prompt_id)
+                if prompt_id in histories:
+                    history = histories[prompt_id]
+                    status = history.get('status', {})
+                    if status.get('status_str') == 'error':
+                        raise RuntimeError(json.dumps(status, ensure_ascii=False)[:4000])
+                    results.append({'case': name, 'ok': True, 'prompt_id': prompt_id, 'outputs': history.get('outputs', {}), 'elapsed': round(time.monotonic() - started, 3)})
+                    print(name, 'PASS', flush=True)
+                    break
+                time.sleep(.3)
+            else:
+                raise TimeoutError('Comfy workflow did not finish')
+        except Exception as error:
+            results.append({'case': name, 'ok': False, 'error': str(error), 'elapsed': round(time.monotonic() - started, 3)})
+            print(name, 'FAIL', str(error)[:500], flush=True)
+    results = [row for row in previous if row['case'] not in {new['case'] for new in results}] + results
+    results.sort(key=lambda row: row['case'])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps({'url': args.url, 'nodes': [name for name in definitions if name.startswith('EasyAPI')], 'results': results}, ensure_ascii=False, indent=2), encoding='utf-8')
+    raise SystemExit(0 if all(row['ok'] for row in results) else 1)
+
+
+if __name__ == '__main__':
+    main()

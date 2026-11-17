@@ -1,0 +1,8 @@
+.venv/
+.git/
+.pytest_cache/
+__pycache__/
+output/
+dist/
+tests/
+tools/remote_mac.py
