@@ -21,6 +21,14 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import aiohttp
 from aiohttp import web
 
+from .client import credential_headers
+
+
+async def _reject_realtime_redirect(session, trace_context, params):
+    # aiohttp strips Authorization on a cross-origin redirect, but does not
+    # strip arbitrary binding headers. Refuse handshake redirects altogether.
+    raise ValueError("Realtime redirects are not allowed")
+
 MAX_AUDIO_BYTES = 32 * 1024 * 1024
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_FRAME_BYTES = 2 * 1024 * 1024
@@ -223,6 +231,7 @@ class RealtimeManager:
             raise web.HTTPBadRequest(text="请选择实时模型")
         try:
             profile = self.runtime.profiles.get(profile_id)
+            profile_id = profile.get("id") or profile_id
             address = realtime_url(profile["base_url"], model)
         except (KeyError, ValueError, FileNotFoundError):
             raise web.HTTPBadRequest(text="连接配置不存在或服务地址无效")
@@ -235,8 +244,11 @@ class RealtimeManager:
         secret = str(profile.get("api_key", ""))
         try:
             timeout = aiohttp.ClientTimeout(total=None, sock_connect=20)
-            async with aiohttp.ClientSession(timeout=timeout) as client:
-                headers = {"Authorization": "Bearer " + secret, "OpenAI-Beta": "realtime=v1"}
+            trace = aiohttp.TraceConfig()
+            trace.on_request_redirect.append(_reject_realtime_redirect)
+            async with aiohttp.ClientSession(timeout=timeout, trace_configs=[trace],
+                    cookie_jar=aiohttp.DummyCookieJar(), trust_env=False) as client:
+                headers = credential_headers(secret, str(profile.get("client_id") or "")) | {"OpenAI-Beta": "realtime=v1"}
                 async with client.ws_connect(address, headers=headers, heartbeat=20,
                                              max_msg_size=MAX_FRAME_BYTES) as upstream:
                     await browser.send_json({"type": "easyapi.connected", "session_id": conversation.id})
@@ -307,7 +319,7 @@ class RealtimeManager:
                             now = time.monotonic()
                             try:
                                 current = self.runtime.profiles.get(profile_id)
-                                changed = current.get("api_key") != profile.get("api_key") or current.get("base_url") != profile.get("base_url")
+                                changed = any(current.get(key) != profile.get(key) for key in ("api_key", "base_url", "client_id"))
                             except (ValueError, KeyError, FileNotFoundError):
                                 changed = True
                             if changed:

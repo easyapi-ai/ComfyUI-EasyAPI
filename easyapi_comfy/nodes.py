@@ -15,16 +15,20 @@ from urllib.parse import quote, urlencode
 from comfy_api.latest import io
 
 from . import media
-from .client import APIResponse, UploadFile
+from .client import APIResponse, EasyAPIError, UploadFile
 from .protocols import PROTOCOLS, get_protocol, validate_path
 from .runtime import get_runtime
 from .tasks import create_task_handle, wait_for_task
+from .video import VIDEO_SLOTS, encode_video_sources, select_video_scenario
 
 JSON = io.Custom("EASYAPI_JSON")
 MEDIA = io.Custom("EASYAPI_MEDIA")
 TASK = io.Custom("EASYAPI_TASK")
 MAX_MEDIA_BYTES = 100 * 1024 * 1024
 MAX_REQUEST_BYTES = 100 * 1024 * 1024
+MAX_VIDEO_INLINE_BYTES = 20 * 1024 * 1024
+VIDEO_MULTIPART_JSON_FIELDS = {"input_references", "metadata", "generate_audio", "seed", "width", "height", "fps", "n"}
+TASK_OPERATIONS = ("video-generation", "image-task", "image-task-edit", "tool-motion-video")
 
 
 def parse_object(value, name="params_json") -> dict:
@@ -77,14 +81,15 @@ def _guard_body(body):
     return body
 
 
-async def validate_request(client, model, protocol, body, files, *, apply_defaults=False):
+async def validate_request(client, model, protocol, body, files, *, apply_defaults=False, metadata=None):
     """Validate declared capabilities; absent metadata keeps advanced input usable."""
     if not model or body is None:
         return
-    try:
-        metadata = await client.model_schema(model, protocol.get("effective_id", protocol["id"]))
-    except Exception:
-        return
+    if metadata is None:
+        try:
+            metadata = await client.model_schema(model, protocol.get("effective_id", protocol["id"]))
+        except EasyAPIError:
+            return
     if metadata.get("matched") is False:
         return
     schema = metadata.get("request_schema") or metadata.get("schema") or {}
@@ -99,6 +104,27 @@ async def validate_request(client, model, protocol, body, files, *, apply_defaul
                     "image", "images", "mask", "file", "files", "input_reference", "input_references"}:
                 body[key] = copy.deepcopy(definition["default"])
     candidate = copy.deepcopy(body)
+    if protocol["id"] == "video-generation" and isinstance(candidate.get("input_references"), list):
+        # Model docs describe materialized URL references. The unified gateway
+        # resolves file indexes and asset IDs before dispatching the request.
+        attachments = {upload.field for upload in files or []}
+        image_references = []
+        for ref in candidate["input_references"]:
+            if not isinstance(ref, dict):
+                continue
+            index = ref.get("file_index")
+            if f"input_references[{index}]" in attachments or ref.get("asset_id"):
+                ref.pop("file_index", None)
+                ref.pop("asset_id", None)
+                ref.setdefault("url", "https://attached-media.invalid/input")
+            if ref.get("type") == "image" and ref.get("url"):
+                image_references.append(ref["url"])
+        if image_references and "input_references" not in properties:
+            if "images" in properties:
+                candidate.setdefault("images", image_references)
+            for key in ("image", "input_reference"):
+                if key in properties:
+                    candidate.setdefault(key, image_references[0])
     grouped = {}
     for upload in files or []:
         field = upload.field.split("[", 1)[0]
@@ -137,6 +163,8 @@ def _accepted_media(operation, family):
         return {"image", "audio", "video"}
     if operation in {"audio-transcriptions", "audio-translations"}:
         return {"audio", "video"}
+    if operation == "tool-motion-video":
+        return {"image", "video"}
     if family == "image" or operation.startswith("tool-"):
         return {"image", "mask"}
     return set()
@@ -195,10 +223,22 @@ async def prepare_request(client, protocol, model, prompt, params, sources, requ
     operation, family = protocol.get("effective_id", protocol["id"]), protocol["family"]
     if operation != "custom-user-request" and any(s.kind not in _accepted_media(operation, family) for s in sources):
         raise ValueError("所选协议不支持已连接的素材类型；请改选兼容协议，或在原生请求中通过 __media_fields 显式指定字段")
-    url_capable = operation in {"video-generation", "video-generations", "native-dashscope", "image-generation", "image-task", "responses", "responses-compact", "gemini-generate", "gemini-stream", "native-seedance"} or (operation == "chat" and all(s.kind in {"image", "video"} for s in sources))
+    video_tool = operation == "tool-motion-video"
+    url_capable = video_tool or operation in {"video-generation", "video-generations", "native-dashscope", "image-generation", "image-task", "responses", "responses-compact", "gemini-generate", "gemini-stream", "native-seedance"} or (operation == "chat" and all(s.kind in {"image", "video"} for s in sources))
     _guard_sources(sources, allow_total=url_capable)
-    local_size = sum(Path(s.path).stat().st_size for s in sources if s.path)
-    estimated_payload = len(json.dumps(body).encode()) + local_size * (1 if operation == "video-generation" else 4 / 3) + len(sources) * 2048
+    if operation == "video-generation" and sources:
+        for field in ("image", "images", "input_reference", "input_references"):
+            body.pop(field, None)
+    # The gateway's multipart parser only restores JSON types for these fields.
+    # Use JSON with direct inline assets when other typed options are present.
+    video_json = video_tool or operation == "video-generation" and any(
+        not isinstance(value, str) and key not in VIDEO_MULTIPART_JSON_FIELDS
+        for key, value in body.items()
+    )
+    local_sizes = {str(s.path): Path(s.path).stat().st_size for s in sources if s.path}
+    local_size = sum(local_sizes[str(s.path)] for s in sources if s.path)
+    encoding_factor = 1 if operation == "video-generation" and not video_json else 4 / 3
+    estimated_payload = len(json.dumps(body).encode()) + local_size * encoding_factor + len(sources) * 2048
     if url_capable and estimated_payload > MAX_REQUEST_BYTES and sources:
         converted = []
         for source in sources:
@@ -206,6 +246,21 @@ async def prepare_request(client, protocol, model, prompt, params, sources, requ
             if not asset.get("url"):
                 raise ValueError("大素材上传后缺少 URL，未提交生成任务")
             converted.append(media.MediaSource(source.kind, role=source.role, mime=source.mime, url=asset["url"]))
+        sources = converted
+    elif video_json:
+        converted = []
+        for source in sources:
+            if source.url:
+                converted.append(source)
+                continue
+            if local_sizes[str(source.path)] <= MAX_VIDEO_INLINE_BYTES:
+                url = _source_uri(source)
+            else:
+                asset = await client.upload_media(source.path, kind=source.kind, role=source.role, mime=source.mime)
+                url = asset.get("url")
+                if not url:
+                    raise ValueError("Media upload did not return a URL.")
+            converted.append(media.MediaSource(source.kind, role=source.role, mime=source.mime, url=url))
         sources = converted
     path = _without_model_in_path(protocol, body, model, route_values)
     if protocol["transport"] == "websocket":
@@ -217,6 +272,18 @@ async def prepare_request(client, protocol, model, prompt, params, sources, requ
         query.update({k: v for k, v in body.items() if k not in {"task_id", "model", "action"}})
         return path, None, files, query
     if native and not sources:
+        return path, _guard_body(body), files, query
+    if video_tool:
+        connected = set()
+        for source in sources:
+            if source.kind in connected:
+                raise ValueError("Connect one image and one motion reference video.")
+            connected.add(source.kind)
+            body[source.kind] = source.url
+        if any(not isinstance(body.get(key), str) or not body[key].strip() for key in ("image", "video")):
+            raise ValueError("Connect an image and a motion reference video.")
+        if prompt:
+            body["prompt"] = prompt
         return path, _guard_body(body), files, query
     if operation == "custom-user-request" and sources:
         fields = protocol.get("media_fields", {})
@@ -235,7 +302,7 @@ async def prepare_request(client, protocol, model, prompt, params, sources, requ
             return path, _guard_body(body), files, query
 
     if protocol["transport"] == "multipart" or (operation == "video-generation" and any(s.path for s in sources)):
-        single_reference = len(sources) == 1 and sources[0].kind == "image" and sources[0].role in {None, "", "reference", "reference_image", "first_frame"}
+        single_reference = len(sources) == 1 and sources[0].kind == "image" and sources[0].role in {None, "", "reference"}
         for index, source in enumerate(sources):
             if not source.path:
                 if operation != "video-generation":
@@ -409,7 +476,7 @@ class OperationNode(io.ComfyNode):
     NODE_ID = "EasyAPIOperation"
     DISPLAY = "EasyAPI 创作"
     OPS = ()
-    NATIVE = False
+    CHOOSES_MODEL = True
 
     @classmethod
     def define_schema(cls):
@@ -424,9 +491,8 @@ class OperationNode(io.ComfyNode):
                   io.Image.Input("image", optional=True), io.Mask.Input("mask", optional=True),
                   io.Audio.Input("audio", optional=True), io.Video.Input("video", optional=True),
                   MEDIA.Input("references", optional=True)]
-        if cls.NATIVE:
-            inputs.insert(4, io.String.Input("request_body", default="{}", multiline=True,
-                                            tooltip="所选创作协议的原生 JSON 请求；仅开放目录中的用户侧操作"))
+        if not cls.CHOOSES_MODEL:
+            inputs = [entry for entry in inputs if entry.id != "model"]
         return io.Schema(node_id=cls.NODE_ID, display_name=cls.DISPLAY, category="EasyAPI/创作",
                          inputs=inputs, outputs=output_schema(), not_idempotent=True,
                          description="调用 EasyAPI 创作接口。异步任务可恢复，模型与高级参数在运行时刷新。")
@@ -439,18 +505,29 @@ class OperationNode(io.ComfyNode):
     @classmethod
     async def execute(cls, profile_id="", model="", prompt="", params_json="{}", operation="chat",
                       wait_for_result=True, timeout=1800, image=None, mask=None, audio=None,
-                      video=None, references=None, request_body=None, **kwargs):
+                      video=None, references=None):
         params = parse_object(params_json)
+        if operation not in cls.OPS:
+            raise ValueError(f"Operation is not supported by this node: {operation}.")
+        if cls.CHOOSES_MODEL and not model:
+            raise ValueError("Select an EasyAPI model before running this node.")
         protocol = get_protocol(operation)
         runtime = get_runtime()
         client = runtime.client(profile_id)
         _interrupt()
         sources = await media.encode_inputs(image=image, mask=mask, audio=audio, video=video, references=references)
-        path, body, files, query = await prepare_request(client, protocol, model, prompt, params, sources, request_body)
-        await validate_request(client, model, protocol, body, files, apply_defaults=request_body is None)
+        return await cls.submit(client, runtime, model, prompt, params,
+                                protocol, sources, wait_for_result, timeout)
+
+    @classmethod
+    async def submit(cls, client, runtime, model, prompt, params,
+                     protocol, sources, wait_for_result, timeout, metadata=None):
+        _interrupt()
+        path, body, files, query = await prepare_request(client, protocol, model, prompt, params, sources)
+        await validate_request(client, model, protocol, body, files, apply_defaults=True, metadata=metadata)
         response = await client.request(protocol["method"], path, body=body, files=files or None,
                                         query=query or None, stream=bool(params.get("stream", False)))
-        handle = create_task_handle(response, profile_id, protocol)
+        handle = create_task_handle(response, client.profile_id, protocol)
         if handle:
             runtime.tasks.save(handle)
             if wait_for_result:
@@ -462,24 +539,76 @@ class OperationNode(io.ComfyNode):
         return _pack(decoded, handle)
 
 
-def _operation_class(name, display, ops, native=False):
-    return type(name, (OperationNode,), {"NODE_ID": name, "DISPLAY": display, "OPS": tuple(ops), "NATIVE": native, "__module__": __name__})
+def _operation_class(name, display, ops, *, chooses_model=True):
+    return type(name, (OperationNode,), {
+        "NODE_ID": name, "DISPLAY": display, "OPS": tuple(ops),
+        "CHOOSES_MODEL": chooses_model, "__module__": __name__,
+    })
 
 
 EasyAPIChat = _operation_class("EasyAPIChat", "EasyAPI 对话与多模态", ["chat", "responses", "responses-compact", "messages", "completions", "gemini-generate", "gemini-stream"])
-EasyAPIImages = _operation_class("EasyAPIImages", "EasyAPI 图片生成与编辑", ["image-generation", "image-edit", "image-task", "image-task-edit", "image-task-fetch", "edits"])
-EasyAPIVideo = _operation_class("EasyAPIVideo", "EasyAPI 视频与多参考", [p["id"] for p in PROTOCOLS if p["family"] == "video" and not p["id"].startswith("tool-")])
+EasyAPIImages = _operation_class("EasyAPIImages", "EasyAPI 图片生成与编辑", ["image-generation", "image-edit", "image-task", "image-task-edit"])
 EasyAPISpeech = _operation_class("EasyAPISpeech", "EasyAPI 语音合成", ["audio-speech"])
 EasyAPITranscribe = _operation_class("EasyAPITranscribe", "EasyAPI 转写与翻译", ["audio-transcriptions", "audio-translations"])
-EasyAPISuno = _operation_class("EasyAPISuno", "EasyAPI Suno 音乐", [p["id"] for p in PROTOCOLS if p["family"] == "suno"])
-EasyAPIMidjourney = _operation_class("EasyAPIMidjourney", "EasyAPI Midjourney", [p["id"] for p in PROTOCOLS if p["family"] == "midjourney"])
-EasyAPITools = _operation_class("EasyAPITools", "EasyAPI 快捷创作工具", [p["id"] for p in PROTOCOLS if p["id"].startswith("tool-")])
-EasyAPIEmbedding = _operation_class("EasyAPIEmbedding", "EasyAPI 向量嵌入", ["embeddings", "engine-embeddings"])
-EasyAPIRerank = _operation_class("EasyAPIRerank", "EasyAPI 文档重排序", ["rerank"])
-EasyAPIModeration = _operation_class("EasyAPIModeration", "EasyAPI 内容审核", ["moderations"])
-EasyAPISearch = _operation_class("EasyAPISearch", "EasyAPI 搜索", ["alpha-search"])
+EasyAPITools = _operation_class("EasyAPITools", "EasyAPI 快捷创作工具", [p["id"] for p in PROTOCOLS if p["id"].startswith("tool-")], chooses_model=False)
 EasyAPICountTokens = _operation_class("EasyAPICountTokens", "EasyAPI Token 计数", ["messages-count-tokens"])
-EasyAPINativeRequest = _operation_class("EasyAPINativeRequest", "EasyAPI 原生创作请求", [p["id"] for p in PROTOCOLS if p["transport"] != "websocket"], True)
+
+
+class EasyAPIVideo(OperationNode):
+    NODE_ID = "EasyAPIVideo"
+    DISPLAY = "EasyAPI 视频生成"
+    OPS = ("video-generation",)
+
+    @classmethod
+    def define_schema(cls):
+        schema = super().define_schema()
+        generic_ports = {"image", "mask", "audio", "video"}
+        schema.inputs = [entry for entry in schema.inputs if entry.id not in generic_ports]
+        schema.inputs.append(io.String.Input("mode", default="auto"))
+        types = {"image": io.Image, "audio": io.Audio, "video": io.Video}
+        schema.inputs.extend(types[kind].Input(name, optional=True) for name, kind, _ in VIDEO_SLOTS)
+        return schema
+
+    @classmethod
+    async def execute(cls, profile_id="", model="", prompt="", params_json="{}", operation="video-generation",
+                      wait_for_result=True, timeout=1800, mode="auto", references=None, **slots):
+        if operation != "video-generation":
+            raise ValueError("This node uses the EasyAPI unified video endpoint.")
+        if not model:
+            raise ValueError("Select an EasyAPI video model before running this node.")
+        unsupported = {name for name, value in slots.items() if value is not None} - {name for name, _, _ in VIDEO_SLOTS}
+        if unsupported:
+            raise ValueError("Reconnect legacy video inputs using the named video reference slots.")
+        params = parse_object(params_json)
+        runtime = get_runtime()
+        client = runtime.client(profile_id)
+        _interrupt()
+        sources = await encode_video_sources(slots, references)
+        try:
+            metadata = await client.model_schema(model, operation)
+        except EasyAPIError:
+            metadata = {}
+        roles = {source.role for source in sources}
+        if not sources:
+            declared_refs = params.get("input_references")
+            roles = {
+                str(ref.get("role") or f"reference_{ref.get('type', 'image')}")
+                for ref in (declared_refs if isinstance(declared_refs, list) else [])
+                if isinstance(ref, dict)
+            }
+            if not roles and (params.get("images") or params.get("image") or params.get("input_reference")):
+                allowed = (metadata.get("video") or {}).get("roles") or []
+                roles.add("reference_image" if "reference_image" in allowed and "first_frame" not in allowed else "first_frame")
+        video = metadata.get("video") or {}
+        scenario = select_video_scenario(mode, roles, video, model=model)
+        variant = (video.get("variants") or {}).get(scenario)
+        if variant and variant.get("request_schema"):
+            schema = copy.deepcopy(variant["request_schema"])
+            if variant.get("required"):
+                schema["required"] = variant["required"]
+            metadata = {**metadata, "request_schema": schema}
+        return await cls.submit(client, runtime, model, prompt, params, get_protocol(operation),
+                                sources, wait_for_result, timeout, metadata=metadata)
 
 
 class EasyAPIMedia(io.ComfyNode):
@@ -491,7 +620,7 @@ class EasyAPIMedia(io.ComfyNode):
                                  MEDIA.Input("references", optional=True),
                                  io.String.Input("url", default="", tooltip="可填已有 http(s) 素材 URL，避免重复上传"),
                                  io.Combo.Input("kind", options=["image", "audio", "video", "file"]),
-                                 io.String.Input("role", default="reference", tooltip="如 first_frame、last_frame、reference、subject")],
+                                 io.String.Input("role", default="reference", tooltip="如 first_frame、last_frame、reference_image、reference_video、reference_audio")],
                          outputs=[MEDIA.Output(display_name="素材")])
 
     @classmethod
@@ -561,8 +690,7 @@ class TaskNode(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(node_id=cls.NODE_ID, display_name=cls.DISPLAY, category="EasyAPI/任务",
                          inputs=[io.String.Input("profile_id", default=""), io.String.Input("task_id", default=""),
-                                 io.Combo.Input("operation", options=[p["id"] for p in PROTOCOLS if p.get("polling")]),
-                                 io.String.Input("params_json", default="{}", multiline=True, tooltip="手动恢复可在此指定 mode 等原生路由参数"),
+                                 io.Combo.Input("operation", options=list(TASK_OPERATIONS)),
                                  io.Int.Input("timeout", default=1800, min=1, max=86400), TASK.Input("task", optional=True)],
                          outputs=output_schema())
 
@@ -571,33 +699,23 @@ class TaskNode(io.ComfyNode):
         return float("nan")
 
     @classmethod
-    async def execute(cls, profile_id="", task_id="", operation="video-generation", timeout=1800, task=None, params_json="{}"):
+    async def execute(cls, profile_id="", task_id="", operation="video-generation", timeout=1800, task=None):
         runtime = get_runtime()
         handle = copy.deepcopy(task) if task else runtime.tasks.get(task_id, profile_id or None)
         if not handle:
             if not task_id:
                 raise ValueError("请连接任务或填写任务 ID")
+            if operation not in TASK_OPERATIONS:
+                raise ValueError("Choose a supported EasyAPI task type.")
             protocol = get_protocol(operation)
             polling = protocol["polling"]
-            route_values = {**parse_object(params_json), "task_id": task_id}
-            def expand(value):
-                if isinstance(value, str):
-                    def replace(match):
-                        if match.group(1) not in route_values:
-                            raise ValueError("手动恢复任务需要 params_json." + match.group(1))
-                        return str(route_values[match.group(1)])
-                    return re.sub(r"\{([a-z_]+)\}", replace, value)
-                if isinstance(value, dict):
-                    return {k: expand(v) for k, v in value.items()}
-                return value
-            polling = expand(polling)
             handle = {"profile_id": profile_id, "task_id": task_id,
                       "poll_path": polling["path"].replace("{task_id}", quote(task_id, safe="")),
                       "poll_method": polling.get("method", "GET"),
-                      "poll_body": {k: (task_id if v == "{task_id}" else v) for k, v in (polling.get("body") or {}).items()},
-                      "poll_query": polling.get("query", {}), "state": "submitted", "operation": operation,
+                      "state": "submitted", "operation": operation,
                       "status_field": polling.get("status_field", "data.status")}
         client = runtime.client(handle.get("profile_id") or profile_id)
+        handle["profile_id"] = client.profile_id
         if cls.WAIT:
             response = await wait_for_task(client, runtime.tasks, handle, timeout=timeout, interrupt=_interrupt)
         else:
@@ -718,7 +836,6 @@ class EasyAPIPreview(io.ComfyNode):
 
 
 NODE_CLASSES = [EasyAPIChat, EasyAPIImages, EasyAPIVideo, EasyAPISpeech, EasyAPITranscribe,
-                EasyAPISuno, EasyAPIMidjourney, EasyAPITools, EasyAPIEmbedding, EasyAPIRerank,
-                EasyAPIModeration, EasyAPISearch, EasyAPICountTokens, EasyAPINativeRequest,
+                EasyAPITools, EasyAPICountTokens,
                 EasyAPIMedia, EasyAPIJSON, EasyAPITaskQuery, EasyAPITaskWait,
                 EasyAPIResultDownload, EasyAPIRealtime, EasyAPIPreview]

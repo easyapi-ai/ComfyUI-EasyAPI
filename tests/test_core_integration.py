@@ -37,7 +37,11 @@ class GatewayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 protocol = get_protocol(operation)
                 protocol["route_params"] = {"mode": "fast"}
                 path = protocol["path"].replace("{action}", "generate").replace("{mode}", "fast")
-                submitted = await self.client.request("POST", path, body={"model": "mock-video", "prompt": "fixture"}, query=protocol.get("query"))
+                body = {"model": "mock-video", "prompt": "fixture"}
+                if operation == "tool-motion-video":
+                    body.update(image=str(self.server.make_url("/fixtures/image.png")),
+                                video=str(self.server.make_url("/fixtures/video.mp4")))
+                submitted = await self.client.request("POST", path, body=body, query=protocol.get("query"))
                 handle = create_task_handle(submitted, "offline", protocol)
                 self.assertIsNotNone(handle)
                 self.store.save(handle)
@@ -65,6 +69,24 @@ class GatewayIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched.data["id"], asset["id"])
         deleted = await self.client.request("DELETE", "/v1/media/" + asset["id"])
         self.assertTrue(deleted.data["deleted"])
+
+    async def test_video_common_form_remains_available_for_incompatible_inferred_variant(self):
+        schema = await self.client.model_schema("mock-video-frames", "video-generation",
+                                                variant="reference-to-video")
+        self.assertIn("resolution", schema["request_schema"]["properties"])
+        self.assertIn("last_frame", schema["video"]["roles"])
+        self.assertNotIn("reference_audio", schema["video"]["roles"])
+        self.assertIsNone(schema["selected_variant"])
+
+    async def test_missing_model_schema_has_protocol_fields_for_the_ui_only(self):
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(self.client, "_metadata", new=AsyncMock(return_value=None)):
+            schema = await self.client.model_schema("private-chat", "chat")
+        self.assertFalse(schema["declared"])
+        self.assertEqual(schema["request_schema"]["properties"], {})
+        self.assertEqual(schema["form_schema"]["properties"]["temperature"]["type"], "number")
+        self.assertEqual(schema["form_schema"]["properties"]["stream"]["type"], "boolean")
 
     async def test_speech_response_and_streamed_text_decode(self):
         response = await self.client.request("POST", "/v1/audio/speech", body={"model": "mock-audio", "input": "hello", "response_format": "wav"})

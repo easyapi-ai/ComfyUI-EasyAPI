@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--ca', default='output/deployment/easyapi-comfy-lan-root.crt')
     parser.add_argument('--output', default='output/verification/comfy.json')
     parser.add_argument('--cases', default='', help='Comma-separated case names for a focused rerun')
+    parser.add_argument('--write-examples', action='store_true')
     args = parser.parse_args()
     context = ssl.create_default_context(cafile=args.ca)
     def call(path, body=None):
@@ -28,8 +29,14 @@ def main():
         except urllib.error.HTTPError as error:
             raise RuntimeError(f'{path}: HTTP {error.code}: {error.read().decode()[:3000]}') from error
     definitions = call('/object_info')
+    removed = {'EasyAPIModeration', 'EasyAPISearch', 'EasyAPIRerank', 'EasyAPIEmbedding',
+               'EasyAPINativeRequest', 'EasyAPIMidjourney', 'EasyAPISuno'}
+    if removed.intersection(definitions):
+        raise RuntimeError('The running instance still registers removed EasyAPI nodes.')
     profiles = call('/easyapi/profiles')['profiles']
-    mock = next(p for p in profiles if p['id'] == 'mock')
+    mock = next((p for p in profiles if p['id'] == 'mock'), None)
+    if mock is None:
+        raise RuntimeError('Create the offline mock connection before running verification. See docs/DEPLOYMENT.md.')
     if mock['base_url'] != 'http://comfytv-easyapi-mock:3199':
         raise RuntimeError('Refusing to generate: mock profile does not point to offline container')
     def node(kind, **values):
@@ -62,11 +69,11 @@ def main():
         '04-image-edit': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIImages', 'image-edit', 'mock-image', image=['1', 2]), '3': node('SaveImage', images=['2', 2], filename_prefix='EasyAPI-verify/edit')},
         '05-async-image': {'1': creative('EasyAPIImages', 'image-task', 'mock-image'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/async-image')},
         '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/video')},
-        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPIMedia', image=['1', 2], role='first_frame'), '3': node('EasyAPIMedia', image=['1', 2], references=['2', 0], role='last_frame'), '4': creative('EasyAPIVideo', 'video-generation', 'mock-video', references=['3', 0]), '5': node('SaveVideo', video=['4', 5], filename_prefix='EasyAPI-verify/reference-video')},
-        '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-audio', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
-        '09-music': {'1': creative('EasyAPISuno', 'suno-action', 'mock-music', params_json='{"action":"generate"}'), '2': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/music')},
-        '10-midjourney': {'1': creative('EasyAPIMidjourney', 'mj-imagine', 'mock-mj'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/mj')},
-        '11-native-protocol': {'1': creative('EasyAPINativeRequest', 'messages', 'mock-text', prompt='', request_body='{"messages":[{"role":"user","content":"offline"}],"max_tokens":16}'), '2': preview('1')},
+        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 2], last_frame=['1', 2], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/frames')},
+        '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-transcribe', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
+        '09-image-tool': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPITools', profile_id='mock', operation='tool-remove-background', image=['1', 2]), '3': node('SaveImage', images=['2', 2], filename_prefix='EasyAPI-verify/tool')},
+        '10-claude-messages': {'1': creative('EasyAPIChat', 'messages', 'mock-text', params_json='{"max_tokens":16}'), '2': preview('1')},
+        '11-video-audio-reference': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video', reference_audio_1=['1', 4], params_json='{"generate_audio":false}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/audio-reference')},
         '12-split-task': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video', wait_for_result=False), '2': node('EasyAPITaskWait', profile_id='mock', task=['1', 6]), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/task-video')},
         '13-json-tools': {'1': node('EasyAPIJSON', operation='parse', params_json='{"zero":0,"off":false,"nested":[1,2]}'), '2': node('EasyAPIPreview', text=['1', 1], json_value=['1', 0])},
     }
@@ -74,11 +81,13 @@ def main():
     previous = json.loads(output.read_text(encoding='utf-8')).get('results', []) if args.cases and output.exists() else []
     results = []
     examples = Path('examples/api')
-    examples.mkdir(parents=True, exist_ok=True)
+    if args.write_examples:
+        examples.mkdir(parents=True, exist_ok=True)
     for name, graph in cases.items():
-        (examples / (name + '.json')).write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding='utf-8')
         if args.cases and name not in args.cases.split(','):
             continue
+        if args.write_examples:
+            (examples / (name + '.json')).write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding='utf-8')
         started = time.monotonic()
         try:
             queued = call('/prompt', {'prompt': graph, 'client_id': 'easyapi-verification-' + uuid.uuid4().hex})
@@ -99,7 +108,7 @@ def main():
         except Exception as error:
             results.append({'case': name, 'ok': False, 'error': str(error), 'elapsed': round(time.monotonic() - started, 3)})
             print(name, 'FAIL', str(error)[:500], flush=True)
-    results = [row for row in previous if row['case'] not in {new['case'] for new in results}] + results
+    results = [row for row in previous if row['case'] in cases and row['case'] not in {new['case'] for new in results}] + results
     results.sort(key=lambda row: row['case'])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps({'url': args.url, 'nodes': [name for name in definitions if name.startswith('EasyAPI')], 'results': results}, ensure_ascii=False, indent=2), encoding='utf-8')

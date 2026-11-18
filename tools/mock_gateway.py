@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import copy
 import io
 import json
 import math
@@ -49,8 +50,16 @@ def video_bytes() -> bytes:
     return out.getvalue()
 
 
-MODELS = [("mock-text", "text"), ("mock-image", "image"), ("mock-video", "video"),
-          ("mock-audio", "audio"), ("mock-realtime", "audio"), ("mock-music", "audio"), ("mock-mj", "image")]
+MODELS = {
+    "mock-text": ("text", ("openai", "anthropic", "gemini", "responses")),
+    "mock-text-basic": ("text", ("openai",)),
+    "mock-image": ("image", ("image-generation", "image-edit", "image-task")),
+    "mock-video": ("video", ("api-video",)),
+    "mock-video-frames": ("video", ("api-video",)),
+    "mock-audio": ("audio", ("audio-speech",)),
+    "mock-realtime": ("audio", ("realtime",)),
+    "mock-transcribe": ("audio", ("audio-transcriptions", "audio-translations")),
+}
 
 
 def create_app() -> web.Application:
@@ -111,19 +120,19 @@ def create_app() -> web.Application:
     async def models(request):
         rows = [{"id": name, "name": name, "object": "model", "owned_by": "offline-fixture", "category": family,
                  "architecture": {"input_modalities": ["text", "image", "audio", "video"], "output_modalities": [family]},
-                 "supported_endpoint_types": {"text": ["openai", "anthropic", "gemini", "responses"], "image": ["image-generation", "image-edit", "image-task"], "video": ["video"], "audio": ["audio", "audio-speech", "realtime"]}[family],
-                 "supported_parameters": ["prompt", "seed", "n", "size", "duration"], "pricing": {"prompt": "0", "completion": "0"}} for name, family in MODELS]
+                 "supported_endpoint_types": endpoints,
+                 "supported_parameters": ["prompt", "seed", "n", "size", "duration"], "pricing": {"prompt": "0", "completion": "0"}} for name, (family, endpoints) in MODELS.items()]
         return web.json_response({"object": "list", "data": rows})
 
     async def pricing(request):
-        return web.json_response({"success": True, "data": [{"model_name": name, "category": family} for name, family in MODELS], "pricing_version": "mock/1"})
+        return web.json_response({"success": True, "data": [{"model_name": name, "category": family} for name, (family, _) in MODELS.items()], "pricing_version": "mock/2"})
 
     async def schema(request):
         name = request.query.get("model_name", "mock-text")
-        family = dict(MODELS).get(name, "text")
+        family, _ = MODELS.get(name, ("text", ()))
         properties = {"seed": {"type": "integer", "minimum": 0, "default": 0}, "n": {"type": "integer", "minimum": 1, "maximum": 4, "default": 1},
                       "watermark": {"type": "boolean", "default": False}, "size": {"type": "string", "enum": ["64x64", "128x128"]},
-                      "duration": {"type": "integer", "enum": [1, 4]}, "input_references": {"type": "array", "items": {"type": "object", "properties": {"type": {"enum": ["image", "audio", "video"]}, "role": {"enum": ["first_frame", "last_frame", "reference_image", "reference_video", "reference_audio"]}, "url": {"type": "string"}}}}}
+                      "duration": {"type": "integer", "enum": [1, 4]}, "input_references": {"type": "array", "items": {"type": "object", "required": ["type", "role", "url"], "properties": {"type": {"enum": ["image", "audio", "video"]}, "role": {"enum": ["first_frame", "last_frame", "reference_image", "reference_video", "reference_audio"]}, "url": {"type": "string"}}}}}
         if family == "audio":
             properties = {"voice": {"type": "string", "enum": ["Cherry", "Serena"], "default": "Cherry"},
                           "instructions": {"type": "string", "description": "对话或语音的风格要求"},
@@ -133,6 +142,14 @@ def create_app() -> web.Application:
             properties = {key: val for key, val in properties.items() if key in {"seed", "n", "watermark", "size"}}
         elif family == "video":
             properties = {key: val for key, val in properties.items() if key in {"seed", "duration", "input_references"}}
+            if name == "mock-video-frames":
+                properties["resolution"] = {"type": "string", "enum": ["480p", "720p"]}
+                properties["input_references"]["items"]["properties"]["role"]["enum"] = ["first_frame", "last_frame"]
+            else:
+                properties["generate_audio"] = {"type": "boolean", "default": True}
+                properties["aspect_ratio"] = {"type": "string", "enum": ["16:9", "9:16"]}
+        elif name == "mock-text-basic":
+            properties = {}
         else:
             properties = {"temperature": {"type": "number", "minimum": 0, "maximum": 2},
                           "max_tokens": {"type": "integer", "minimum": 1, "maximum": 4096},
@@ -142,8 +159,29 @@ def create_app() -> web.Application:
             spec["required"] = ["input", "voice"]
         entries = {"text": [("openai", "/v1/chat/completions", "json"), ("responses", "/v1/responses", "json"), ("anthropic", "/v1/messages", "json"), ("gemini", "/v1beta/models/{model}:generateContent", "json")],
                    "image": [("image-generation", "/v1/images/generations", "json"), ("image-edit", "/v1/images/edits", "multipart"), ("image-task", "/v1/images/tasks", "json")],
-                   "video": [("video", "/v1/videos", "multipart")], "audio": [("audio-speech", "/v1/audio/speech", "json"), ("realtime", "/v1/realtime", "websocket")]}
-        endpoints = [{"key": key, "path": path, "method": "POST", "transport": transport, "request_schema": spec, "variants": []} for key, path, transport in entries[family]]
+                   "video": [("api-video", "/v1/videos", "json")],
+                   "audio": {
+                       "mock-audio": [("audio-speech", "/v1/audio/speech", "json")],
+                       "mock-realtime": [("realtime", "/v1/realtime", "websocket")],
+                       "mock-transcribe": [("audio-transcriptions", "/v1/audio/transcriptions", "multipart"),
+                                           ("audio-translations", "/v1/audio/translations", "multipart")],
+                   }.get(name, [])}
+        endpoints = [{"key": key, "path": path, "method": "GET" if transport == "websocket" else "POST",
+                      "transport": transport, "request_schema": spec, "variants": []} for key, path, transport in entries[family]]
+        if name == "mock-text-basic":
+            endpoints = endpoints[:1]
+        if family == "video":
+            scenarios = {"text-to-video": [], "image-to-video": ["first_frame", "last_frame"]}
+            if name != "mock-video-frames":
+                scenarios["reference-to-video"] = ["reference_image", "reference_video", "reference_audio"]
+            for scenario, roles in scenarios.items():
+                variant = copy.deepcopy(spec)
+                if roles:
+                    variant["properties"]["input_references"]["items"]["properties"]["role"]["enum"] = roles
+                else:
+                    variant["properties"].pop("input_references")
+                endpoints[0]["variants"].append({"key": scenario, "label": scenario, "path": "/v1/videos",
+                                                 "request_schema": variant, "method": "POST", "transport": "json"})
         data = {"model": name, "category": family, "docs_version": "model-docs/1", "endpoints": endpoints, "params_declared": True, "request_schema": spec, "params": {family: spec}}
         return web.json_response({"success": True, "data": data, "pricing_version": "mock/1"})
 
@@ -197,6 +235,9 @@ def create_app() -> web.Application:
 
     async def submit(request):
         body, files = await parse(request)
+        if request.path == "/v1/tools/motion-video" and (
+                request.content_type != "application/json" or any(not body.get(key) for key in ("image", "video"))):
+            return web.json_response({"error": {"message": "Motion video requires image and video in JSON"}}, status=400)
         family = "image" if "images/tasks" in request.path else "music" if "/suno/" in request.path else "mj" if "/mj/" in request.path else "video"
         task_id = f"mock_{family}_{uuid.uuid4().hex[:12]}"
         app["jobs"][task_id] = {"family": family, "polls": 0, "fail": "[fail]" in json.dumps(body), "body": body, "files": files}

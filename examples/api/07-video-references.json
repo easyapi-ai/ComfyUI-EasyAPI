@@ -15,67 +15,38 @@
     }
   },
   "2": {
-    "class_type": "EasyAPIMedia",
-    "inputs": {
-      "url": "",
-      "kind": "image",
-      "role": "first_frame",
-      "image": [
-        "1",
-        2
-      ]
-    },
-    "_meta": {
-      "title": "EasyAPI 素材与参考组"
-    }
-  },
-  "3": {
-    "class_type": "EasyAPIMedia",
-    "inputs": {
-      "url": "",
-      "kind": "image",
-      "role": "last_frame",
-      "image": [
-        "1",
-        2
-      ],
-      "references": [
-        "2",
-        0
-      ]
-    },
-    "_meta": {
-      "title": "EasyAPI 素材与参考组"
-    }
-  },
-  "4": {
     "class_type": "EasyAPIVideo",
     "inputs": {
       "profile_id": "mock",
-      "model": "mock-video",
+      "model": "mock-video-frames",
       "operation": "video-generation",
       "prompt": "离线接口验收",
-      "params_json": "{}",
+      "params_json": "{\"resolution\":\"480p\"}",
       "wait_for_result": true,
       "timeout": 1800,
-      "references": [
-        "3",
-        0
+      "mode": "auto",
+      "first_frame": [
+        "1",
+        2
+      ],
+      "last_frame": [
+        "1",
+        2
       ]
     },
     "_meta": {
-      "title": "EasyAPI 视频与多参考"
+      "title": "EasyAPI 视频生成"
     }
   },
-  "5": {
+  "3": {
     "class_type": "SaveVideo",
     "inputs": {
-      "filename_prefix": "EasyAPI-verify/reference-video",
+      "filename_prefix": "EasyAPI-verify/frames",
       "format": "auto",
       "format.codec": "auto",
       "codec": "auto",
       "video": [
-        "4",
+        "2",
         5
       ]
     },

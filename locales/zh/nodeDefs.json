@@ -1,0 +1,940 @@
+{
+  "EasyAPIChat": {
+    "display_name": "EasyAPI 对话",
+    "description": "使用当前连接及操作可用的模型生成文本或多模态响应。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "chat": "对话",
+          "responses": "Responses 响应",
+          "responses-compact": "精简响应",
+          "messages": "Claude 消息",
+          "completions": "文本补全",
+          "gemini-generate": "Gemini 生成",
+          "gemini-stream": "Gemini 流式生成"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIImages": {
+    "display_name": "EasyAPI 图片",
+    "description": "生成或编辑图片，支持异步图片任务，可直接连接 IMAGE 与 MASK。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "image-generation": "生成图片",
+          "image-edit": "编辑图片",
+          "image-task": "提交图片任务",
+          "image-task-edit": "提交图片编辑任务"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIVideo": {
+    "display_name": "EasyAPI 视频",
+    "description": "通过统一 /v1/videos 接口生成视频，使用首帧、尾帧及各类参考素材专用端口。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "video-generation": "生成视频"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      },
+      "mode": {
+        "name": "输入模式",
+        "tooltip": "auto 根据已连接的首帧、尾帧和参考素材选择模型支持的模式。切换显示语言不会修改保存的模式值。"
+      },
+      "first_frame": {
+        "name": "首帧",
+        "tooltip": "可选首帧 IMAGE，所选模型须支持首帧输入。"
+      },
+      "last_frame": {
+        "name": "尾帧",
+        "tooltip": "可选尾帧 IMAGE，按模型要求与首帧一起使用。"
+      },
+      "reference_image_1": {
+        "name": "参考图 1",
+        "tooltip": "可选参考图 1，支持情况与组合规则由所选模型决定。"
+      },
+      "reference_image_2": {
+        "name": "参考图 2",
+        "tooltip": "可选参考图 2，支持情况与组合规则由所选模型决定。"
+      },
+      "reference_video_1": {
+        "name": "参考视频 1",
+        "tooltip": "可选参考视频 1，支持情况与组合规则由所选模型决定。"
+      },
+      "reference_video_2": {
+        "name": "参考视频 2",
+        "tooltip": "可选参考视频 2，支持情况与组合规则由所选模型决定。"
+      },
+      "reference_audio_1": {
+        "name": "参考音频 1",
+        "tooltip": "可选参考音频 1，支持情况与组合规则由所选模型决定。"
+      },
+      "reference_audio_2": {
+        "name": "参考音频 2",
+        "tooltip": "可选参考音频 2，支持情况与组合规则由所选模型决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPISpeech": {
+    "display_name": "EasyAPI 语音合成",
+    "description": "使用兼容的语音合成模型，返回原生 ComfyUI AUDIO。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "audio-speech": "语音合成"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPITranscribe": {
+    "display_name": "EasyAPI 转录与翻译",
+    "description": "使用兼容操作与模型转录或翻译连接的音频。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "audio-transcriptions": "音频转录",
+          "audio-translations": "音频翻译"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPITools": {
+    "display_name": "EasyAPI 创作工具",
+    "description": "调用平台启用的创作工具，可用性及配置模型取决于连接与平台设置。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "tool-remove-watermark": "去水印",
+          "tool-remove-background": "去背景",
+          "tool-upscale": "图片超分",
+          "tool-image-text": "修改图片文字",
+          "tool-motion-video": "动作视频"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPICountTokens": {
+    "display_name": "EasyAPI Token 计数",
+    "description": "对兼容的消息请求进行 Token 计数，不生成回复。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "messages-count-tokens": "消息 Token 计数"
+        }
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "wait_for_result": {
+        "name": "等待结果",
+        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIMedia": {
+    "display_name": "EasyAPI 素材与参考组",
+    "description": "将本地素材或已有 URL 按明确角色组合为参考组。",
+    "inputs": {
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      },
+      "url": {
+        "name": "已有素材 URL",
+        "tooltip": "已有 HTTP(S) 素材 URL；操作支持 URL 时直接引用。"
+      },
+      "kind": {
+        "name": "素材类型",
+        "tooltip": "已有 URL 的素材类型，不是模型或协议名称。",
+        "options": {
+          "image": "图片",
+          "audio": "音频",
+          "video": "视频",
+          "file": "文件"
+        }
+      },
+      "role": {
+        "name": "参考角色",
+        "tooltip": "素材携带的角色，如 first_frame、last_frame、reference_image；不会静默改写不支持的角色。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIJSON": {
+    "display_name": "EasyAPI JSON 工具",
+    "description": "解析、读取和修改 JSON，保留数字、布尔值、数组和对象。",
+    "inputs": {
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "parse": "解析 JSON",
+          "get": "读取值",
+          "merge": "合并对象",
+          "set": "设置值",
+          "append": "追加条目",
+          "stringify": "格式化 JSON"
+        }
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "path": {
+        "name": "JSON 路径",
+        "tooltip": "点号分隔的 JSON 路径，数组索引使用数字段。"
+      },
+      "value": {
+        "name": "值",
+        "tooltip": "要读取或修改的 JSON 值。"
+      },
+      "other": {
+        "name": "另一值",
+        "tooltip": "合并、设置或追加时使用的 JSON 值。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "JSON"
+      },
+      "1": {
+        "name": "文本"
+      }
+    }
+  },
+  "EasyAPITaskQuery": {
+    "display_name": "EasyAPI 查询任务",
+    "description": "查询一次已有任务，不会重新提交生成。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "task_id": {
+        "name": "任务 ID",
+        "tooltip": "已有任务的 ID，查询或下载不会提交新生成。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "video-generation": "生成视频",
+          "image-task": "提交图片任务",
+          "image-task-edit": "提交图片编辑任务",
+          "tool-motion-video": "动作视频"
+        }
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "task": {
+        "name": "任务句柄",
+        "tooltip": "来自提交、查询或等待节点的持久任务句柄。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPITaskWait": {
+    "display_name": "EasyAPI 等待任务",
+    "description": "恢复等待已保存任务，停止本地等待后仍保留任务句柄。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "task_id": {
+        "name": "任务 ID",
+        "tooltip": "已有任务的 ID，查询或下载不会提交新生成。"
+      },
+      "operation": {
+        "name": "操作",
+        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
+        "options": {
+          "video-generation": "生成视频",
+          "image-task": "提交图片任务",
+          "image-task-edit": "提交图片编辑任务",
+          "tool-motion-video": "动作视频"
+        }
+      },
+      "timeout": {
+        "name": "等待超时（秒）",
+        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
+      },
+      "task": {
+        "name": "任务句柄",
+        "tooltip": "来自提交、查询或等待节点的持久任务句柄。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIResultDownload": {
+    "display_name": "EasyAPI 下载结果",
+    "description": "下载并解码已有任务结果，不会重新提交生成。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "task_id": {
+        "name": "任务 ID",
+        "tooltip": "已有任务的 ID，查询或下载不会提交新生成。"
+      },
+      "task": {
+        "name": "任务句柄",
+        "tooltip": "来自提交、查询或等待节点的持久任务句柄。"
+      },
+      "result": {
+        "name": "结果 JSON",
+        "tooltip": "要下载或解码的已有响应 JSON。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "图片"
+      },
+      "3": {
+        "name": "蒙版"
+      },
+      "4": {
+        "name": "音频"
+      },
+      "5": {
+        "name": "视频"
+      },
+      "6": {
+        "name": "任务"
+      },
+      "7": {
+        "name": "素材"
+      }
+    }
+  },
+  "EasyAPIRealtime": {
+    "display_name": "EasyAPI 实时对话",
+    "description": "浏览器实时对话独立于队列运行；执行工作流读取冻结的文字与音频快照。",
+    "inputs": {
+      "profile_id": {
+        "name": "连接",
+        "tooltip": "由 ComfyUI 后端保存的连接配置。工作流不保存 API Key。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
+      },
+      "params_json": {
+        "name": "高级参数",
+        "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
+      },
+      "snapshot_id": {
+        "name": "冻结对话",
+        "tooltip": "冻结或应用实时对话后自动填写的快照 ID。执行队列只读取快照，不开启麦克风。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "对话文本"
+      },
+      "1": {
+        "name": "助手音频"
+      },
+      "2": {
+        "name": "对话记录"
+      }
+    }
+  },
+  "EasyAPIPreview": {
+    "display_name": "EasyAPI 预览",
+    "description": "预览连接的文本、JSON、图片、音频、视频或参考组，不调用生成接口。",
+    "inputs": {
+      "text": {
+        "name": "文本",
+        "tooltip": "文本输入或预览内容。"
+      },
+      "json_value": {
+        "name": "JSON",
+        "tooltip": "要预览的 JSON 值。"
+      },
+      "image": {
+        "name": "图片",
+        "tooltip": "ComfyUI IMAGE 输入，直接使用连接图片，无需手工创建 URL。"
+      },
+      "mask": {
+        "name": "蒙版",
+        "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
+      },
+      "audio": {
+        "name": "音频",
+        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
+      },
+      "video": {
+        "name": "视频",
+        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
+      },
+      "references": {
+        "name": "额外参考组",
+        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+      }
+    },
+    "outputs": {}
+  }
+}

@@ -33,9 +33,10 @@ class Runtime:
             pass
         self.input_dir = self.state_dir / "inputs"
 
-    def client(self, profile_id="default"):
+    def client(self, profile_id=None):
+        profile_id = self.profiles.resolve_id(profile_id)
         profile = self.profiles.get(profile_id)
-        key = (profile_id, profile["base_url"], profile["api_key"])
+        key = (profile_id, profile["base_url"], profile["api_key"], profile.get("client_id"))
         if key not in self._clients:
             self._clients[key] = EasyAPIClient(profile)
         return self._clients[key]

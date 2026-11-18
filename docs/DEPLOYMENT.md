@@ -1,7 +1,7 @@
 # Mac mini 测试环境
 
 入口：`https://192.168.2.48:3443`；原 HTTP 入口仍为 `http://192.168.2.48:3106`。
-HTTP 页面可使用常规节点，麦克风和连接管理请使用 HTTPS。
+两个入口均可运行常规节点、手动保存 API Key 和删除连接。局域网中的官网授权和浏览器麦克风使用 HTTPS 入口。
 
 ## 持久安装
 
@@ -16,7 +16,8 @@ ComfyUI-Manager 曾在容器可写层升级核心，因此先把运行中核心�
 镜像保留在本机，不会推送到镜像仓库。
 
 离线模拟服务 `comfytv-easyapi-mock` 只加入专用 Docker 网络，不发布宿主机端口。
-测试连接 `mock` 固定指向该服务，Key 为公开测试值 `mock-only-key`。
+需要运行离线验收时，在插件连接管理中手动创建 ID 为 `mock` 的连接，网关填写
+`http://comfytv-easyapi-mock:3199`，Key 填写公开测试值 `mock-only-key`。
 
 ## HTTPS 与证书
 

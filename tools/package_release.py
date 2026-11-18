@@ -6,7 +6,8 @@ from pathlib import Path
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP = {'.git', '.venv', '__pycache__', '.pytest_cache', 'output', 'dist', '.playwright', '.playwright-cli'}
+SKIP = {'.git', '.venv', '__pycache__', '.pytest_cache', 'output', 'dist', 'state', '.playwright', '.playwright-cli'}
+PRIVATE_FILES = {'profiles.json', 'presets.json', 'presets.json.lock', 'tasks.json', 'auth-instance.json', 'container.env'}
 
 
 def main():
@@ -18,7 +19,9 @@ def main():
             relative = path.relative_to(ROOT)
             if not path.is_file() or any(part in SKIP or part.endswith('.egg-info') for part in relative.parts):
                 continue
-            if path.suffix.lower() in {'.pem', '.key', '.pyc'} or path.name == 'profiles.json':
+            if path.suffix.lower() in {'.pem', '.key', '.pyc', '.p12', '.pfx'} or path.name in PRIVATE_FILES:
+                continue
+            if path.name == '.env' or path.name.startswith(('.env.', 'container-inspect')):
                 continue
             if relative.as_posix() == 'IMPLEMENTATION-CONTRACT.md':
                 continue

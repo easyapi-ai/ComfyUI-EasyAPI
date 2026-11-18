@@ -8,10 +8,11 @@
       "prompt": "离线接口验收",
       "params_json": "{}",
       "wait_for_result": false,
-      "timeout": 1800
+      "timeout": 1800,
+      "mode": "auto"
     },
     "_meta": {
-      "title": "EasyAPI 视频与多参考"
+      "title": "EasyAPI 视频生成"
     }
   },
   "2": {
@@ -19,8 +20,7 @@
     "inputs": {
       "profile_id": "mock",
       "task_id": "",
-      "operation": "image-task",
-      "params_json": "{}",
+      "operation": "video-generation",
       "timeout": 1800,
       "task": [
         "1",

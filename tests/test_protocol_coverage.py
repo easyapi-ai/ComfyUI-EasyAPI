@@ -42,6 +42,9 @@ class ProtocolCoverage(unittest.IsolatedAsyncioTestCase):
                     path = '/v1/chat/completions'
                 self.app['assets']['fixture_media'] = {'id': 'fixture_media', 'url': str(self.server.make_url('/fixtures/image.png'))}
                 body = {'model': 'mock-text', 'prompt': 'offline', 'input': 'offline', 'query': 'offline', 'messages': [], 'ids': [task_id]}
+                if operation['id'] == 'tool-motion-video':
+                    body.update(image=str(self.server.make_url('/fixtures/image.png')),
+                                video=str(self.server.make_url('/fixtures/video.mp4')))
                 files = None
                 if operation['transport'] == 'multipart':
                     audio = 'audio' in operation['id'] and operation['id'] != 'audio-speech'

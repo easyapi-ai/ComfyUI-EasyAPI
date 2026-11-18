@@ -36,7 +36,7 @@ for _ in range(90):
     try:
         definitions=json.load(urllib.request.urlopen('http://127.0.0.1:3106/object_info', timeout=2))
         nodes=[name for name in definitions if name.startswith('EasyAPI')]
-        if len(nodes)>=21:
+        if len(nodes) == 14:
             print(json.dumps({'development_sha256':report['sha256'],'nodes':len(nodes),'backup':str(backup)}))
             break
     except Exception:

@@ -1,6 +1,7 @@
 """Same-origin configuration and metadata routes for ComfyUI."""
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
 import secrets
@@ -10,14 +11,37 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from .client import EasyAPIError
+from .client import EasyAPIError, normalize_locale
 from .protocols import PROTOCOLS
 from .runtime import get_runtime
 
 
 _sessions = {}
 _registered = set()
-_COOKIE = "easyapi_management_session"
+_SECURE_COOKIE = "easyapi_management_session"
+_HTTP_COOKIE = "easyapi_management_session_http"
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _normalize_origin(value):
+    origin = urlsplit(value)
+    if (origin.scheme not in {"http", "https"} or not origin.hostname or origin.username is not None
+            or origin.path not in {"", "/"} or origin.query or origin.fragment):
+        raise ValueError("An HTTP or HTTPS origin is required")
+    host = f"[{origin.hostname}]" if ":" in origin.hostname else origin.hostname
+    port = origin.port
+    default_port = 443 if origin.scheme == "https" else 80
+    authority = f"{host}:{port}" if port is not None and port != default_port else host
+    return f"{origin.scheme}://{authority}"
+
+
+def _direct_origin(request):
+    return _normalize_origin(f"{request.scheme}://{request.host}")
+
+
+def _public_origin():
+    configured = os.environ.get("EASYAPI_PUBLIC_ORIGIN")
+    return _normalize_origin(configured) if configured else None
 
 
 def validate_origin(request):
@@ -27,26 +51,47 @@ def validate_origin(request):
             raise web.HTTPForbidden(text="A same-origin browser request is required")
         return
     try:
-        actual = urlsplit(supplied)
-        expected = urlsplit(os.environ.get("EASYAPI_PUBLIC_ORIGIN") or f"{request.scheme}://{request.host}")
-        def normalized(parsed):
-            return parsed.scheme, parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
-        if actual.username or actual.password or actual.path not in {"", "/"} or actual.query or actual.fragment or normalized(actual) != normalized(expected):
-            raise ValueError()
+        origin = _normalize_origin(supplied)
+        public = _public_origin()
+        if origin == public:
+            return origin
+        if origin == _direct_origin(request):
+            host = urlsplit(origin).hostname
+            # A proxy pin also limits direct management to known hosts.
+            if public is None or host == urlsplit(public).hostname or host in _LOOPBACK_HOSTS:
+                return origin
     except ValueError:
-        raise web.HTTPForbidden(text="Cross-origin EasyAPI request rejected") from None
+        pass
+    raise web.HTTPForbidden(text="Cross-origin EasyAPI request rejected")
+
+
+def _management_origin(request):
+    origin = validate_origin(request)
+    if origin:
+        return origin
+    # Older browsers/clients can bootstrap with GET, which may omit Origin.
+    # The proxy normally preserves the public Host even when it terminates TLS.
+    public = _public_origin()
+    if public and public == _normalize_origin(f"{urlsplit(public).scheme}://{request.host}"):
+        return public
+    return _direct_origin(request)
+
+
+def _session_cookie(origin):
+    return _SECURE_COOKIE if origin.startswith("https://") else _HTTP_COOKIE
 
 
 def require_management(request):
-    validate_origin(request)
-    if not request.headers.get("Origin") and (request.method not in {"GET", "HEAD"} or request.headers.get("Upgrade", "").lower() == "websocket"):
-        raise web.HTTPForbidden(text="Management requires a same-origin browser")
-    session = _sessions.get(request.cookies.get(_COOKIE, ""))
+    origin = _management_origin(request)
+    sid = request.cookies.get(_session_cookie(origin), "")
+    session = _sessions.get(sid)
     nonce = request.headers.get("X-EasyAPI-Management", "")
     if request.headers.get("Upgrade", "").lower() == "websocket":
         nonce = nonce or request.query.get("nonce", "")
-    if not session or session["expires"] < time.monotonic() or not secrets.compare_digest(str(nonce), session["nonce"]):
+    if (not session or session["origin"] != origin or session["expires"] < time.monotonic()
+            or not secrets.compare_digest(str(nonce), session["nonce"])):
         raise web.HTTPForbidden(text="Refresh the EasyAPI settings page before managing profiles or sessions")
+    return sid
 
 
 def _guard(handler):
@@ -57,7 +102,10 @@ def _guard(handler):
             return await handler(request)
         except web.HTTPException:
             raise
-        except (ValueError, KeyError, EasyAPIError) as exc:
+        except EasyAPIError as exc:
+            status = exc.status if 400 <= exc.status < 600 else 502
+            return web.json_response({"error": str(exc), "code": "gateway_authentication" if status == 401 else "gateway_error"}, status=status)
+        except (ValueError, KeyError) as exc:
             return web.json_response({"error": str(exc)}, status=400)
     return wrapped
 
@@ -65,52 +113,171 @@ def _guard(handler):
 def build_routes(runtime=None):
     rt = runtime or get_runtime()
     routes = web.RouteTableDef()
+    presets = None
+    authorization = None
+
+    def preset_store():
+        nonlocal presets
+        if presets is None:
+            from .presets import PresetStore
+            presets = PresetStore(rt.state_dir / "presets.json")
+        return presets
+
+    def authorization_broker():
+        nonlocal authorization
+        if authorization is None:
+            from .authorization import AuthorizationBroker
+            authorization = AuthorizationBroker(rt.profiles, rt.state_dir)
+        return authorization
+
+    def authorization_owner(request):
+        owner = require_management(request)
+        origin = urlsplit(request.headers.get("Origin", ""))
+        if origin.scheme != "https" and origin.hostname not in _LOOPBACK_HOSTS:
+            raise web.HTTPForbidden(text="Open ComfyUI using HTTPS or localhost to authorize with EasyAPI.")
+        return owner
 
     @routes.get("/easyapi/bootstrap")
+    @routes.post("/easyapi/bootstrap")
     @_guard
     async def bootstrap(request):
+        origin = _management_origin(request)
+        cookie = _session_cookie(origin)
         now = time.monotonic()
         for sid in [sid for sid, value in _sessions.items() if value["expires"] < now]:
             del _sessions[sid]
-        sid = request.cookies.get(_COOKIE, "")
-        if sid not in _sessions:
+        sid = request.cookies.get(cookie, "")
+        if sid not in _sessions or _sessions[sid]["origin"] != origin:
             sid = secrets.token_urlsafe(32)
-            _sessions[sid] = {"nonce": secrets.token_urlsafe(32), "expires": now + 3600}
+            _sessions[sid] = {"nonce": secrets.token_urlsafe(32), "origin": origin}
         _sessions[sid]["expires"] = now + 3600
         response = web.json_response({"management_nonce": _sessions[sid]["nonce"]})
-        secure = request.secure or os.environ.get("EASYAPI_PUBLIC_ORIGIN", "").startswith("https://")
         # ComfyUI serves extension APIs through both /easyapi and /api/easyapi.
         # The same management session must accompany either HTTP or WS prefix.
-        response.set_cookie(_COOKIE, sid, httponly=True, samesite="Strict", secure=secure, path="/", max_age=3600)
+        # Cookie scope ignores ports, so HTTP cannot share the HTTPS cookie name.
+        response.set_cookie(cookie, sid, httponly=True, samesite="Strict", secure=cookie == _SECURE_COOKIE, path="/", max_age=3600)
         response.headers["Cache-Control"] = "no-store"
         return response
 
     @routes.get("/easyapi/profiles")
     @_guard
     async def profiles(request):
-        return web.json_response({"profiles": rt.profiles.list_public()})
+        return web.json_response({"profiles": rt.profiles.list_public(), "default_profile_id": rt.profiles.default_profile_id()})
+
+    @routes.post("/easyapi/default-profile")
+    @_guard
+    async def default_profile(request):
+        require_management(request)
+        value = await request.json()
+        if not isinstance(value, dict) or "profile_id" not in value:
+            raise ValueError("profile_id is required; use null to clear the default")
+        selected = rt.profiles.set_default(value.get("profile_id"))
+        return web.json_response({"default_profile_id": selected})
 
     @routes.post("/easyapi/profiles/{profile_id}")
     @_guard
     async def save_profile(request):
         require_management(request)
         value = await request.json()
-        public = rt.profiles.save(request.match_info["profile_id"], value["base_url"], value.get("api_key", ""), value.get("name"))
-        return web.json_response({"profile": public})
+        if not isinstance(value, dict):
+            raise ValueError("Connection settings must be a JSON object")
+        public = rt.profiles.save(request.match_info["profile_id"], value["base_url"], value.get("api_key", ""), value.get("name"),
+                                  make_default=value.get("make_default") is True)
+        return web.json_response({"profile": public, "default_profile_id": rt.profiles.default_profile_id()})
 
     @routes.delete("/easyapi/profiles/{profile_id}")
     @_guard
     async def delete_profile(request):
         require_management(request)
         rt.profiles.delete(request.match_info["profile_id"])
+        return web.json_response({"ok": True, "default_profile_id": rt.profiles.default_profile_id()})
+
+    @routes.post("/easyapi/profiles/{profile_id}/test")
+    @_guard
+    async def test_profile(request):
+        require_management(request)
+        profile_id = request.match_info["profile_id"]
+        profile = rt.profiles.get(profile_id)
+        checked_at = int(time.time())
+        try:
+            response = await asyncio.wait_for(rt.client(profile_id).request("GET", "/v1/models"), timeout=15)
+            data = response.data
+            if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+                raise EasyAPIError("The gateway did not return a model list.", status=502)
+        except (EasyAPIError, TimeoutError) as exc:
+            rt.profiles.record_check(profile, False, checked_at)
+            status = exc.status if isinstance(exc, EasyAPIError) and 400 <= exc.status < 600 else 502
+            return web.json_response({"ok": False, "checked_at": checked_at,
+                "code": "gateway_authentication" if status == 401 else "gateway_error",
+                "error": "The gateway rejected this credential." if status == 401 else "The gateway could not be reached or did not return a model list.",
+                "profile": rt.profiles.public_status(profile)}, status=status)
+        rt.profiles.record_check(profile, True, checked_at)
+        return web.json_response({"ok": True, "checked_at": checked_at, "model_count": len(data["data"]),
+                                  "profile": rt.profiles.public_status(profile)})
+
+    @routes.get("/easyapi/presets")
+    @_guard
+    async def list_presets(request):
+        profile = rt.profiles.get(request.query.get("profile_id"))
+        return web.json_response(preset_store().list(profile["id"], request.query.get("operation")))
+
+    @routes.post("/easyapi/presets")
+    @routes.put("/easyapi/presets/{preset_id}")
+    @_guard
+    async def save_preset(request):
+        require_management(request)
+        value = await request.json()
+        if not isinstance(value, dict) or not value.get("profile_id"):
+            raise ValueError("A connection and preset are required")
+        rt.profiles.get(value["profile_id"])
+        saved = preset_store().save(value, request.match_info.get("preset_id"))
+        return web.json_response({"preset": saved})
+
+    @routes.delete("/easyapi/presets/{preset_id}")
+    @_guard
+    async def delete_preset(request):
+        require_management(request)
+        profile_id = request.query.get("profile_id")
+        if not profile_id:
+            raise ValueError("profile_id is required")
+        rt.profiles.get(profile_id)
+        preset_store().delete(request.match_info["preset_id"], profile_id)
         return web.json_response({"ok": True})
+
+    @routes.post("/easyapi/auth/start")
+    @_guard
+    async def start_authorization(request):
+        owner = authorization_owner(request)
+        value = await request.json()
+        if not isinstance(value, dict) or not isinstance(value.get("profile_id"), str):
+            raise ValueError("Choose a connection ID for the authorization")
+        result = await authorization_broker().start(owner, value["profile_id"], value.get("name"),
+                                                      make_default=value.get("make_default") is True)
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/easyapi/auth/{flow_id}/poll")
+    @_guard
+    async def poll_authorization(request):
+        owner = authorization_owner(request)
+        result = await authorization_broker().poll(owner, request.match_info["flow_id"])
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.delete("/easyapi/auth/{flow_id}")
+    @_guard
+    async def cancel_authorization(request):
+        owner = authorization_owner(request)
+        result = await authorization_broker().cancel(owner, request.match_info["flow_id"])
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     @routes.get("/easyapi/models")
     @_guard
     async def models(request):
-        client = rt.client(request.query.get("profile_id", "default"))
-        rows = await client.discover_models(request.query.get("family"), refresh=request.query.get("refresh") in {"1", "true"})
-        return web.json_response({"models": rows})
+        client = rt.client(request.query.get("profile_id"))
+        locale = normalize_locale(request.query.get("locale") or request.query.get("lang"))
+        operation = request.query.get("operation")
+        rows = await client.discover_models(request.query.get("family"), operation, locale=locale,
+                                            refresh=request.query.get("refresh") in {"1", "true"})
+        return web.json_response({"models": rows, "empty": not rows, "authority": "api_key", "operation": operation, "locale": locale})
 
     @routes.get("/easyapi/schema")
     @_guard
@@ -118,8 +285,9 @@ def build_routes(runtime=None):
         model = request.query.get("model", "")
         if not model:
             raise ValueError("model is required")
-        result = await rt.client(request.query.get("profile_id", "default")).model_schema(
-            model, request.query.get("operation"), refresh=request.query.get("refresh") in {"1", "true"})
+        result = await rt.client(request.query.get("profile_id")).model_schema(
+            model, request.query.get("operation"), locale=request.query.get("locale") or request.query.get("lang"),
+            variant=request.query.get("variant") or request.query.get("mode"), refresh=request.query.get("refresh") in {"1", "true"})
         result["schema"] = result["request_schema"]
         return web.json_response(result)
 

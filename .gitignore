@@ -11,6 +11,9 @@ dist/
 *.pem
 *.key
 profiles.json
+presets.json
+presets.json.lock
+auth-instance.json
 state/
 .env
 .env.*

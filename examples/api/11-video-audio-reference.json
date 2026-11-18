@@ -1,0 +1,53 @@
+{
+  "1": {
+    "class_type": "EasyAPISpeech",
+    "inputs": {
+      "profile_id": "mock",
+      "model": "mock-audio",
+      "operation": "audio-speech",
+      "prompt": "离线接口验收",
+      "params_json": "{}",
+      "wait_for_result": true,
+      "timeout": 1800
+    },
+    "_meta": {
+      "title": "EasyAPI 语音合成"
+    }
+  },
+  "2": {
+    "class_type": "EasyAPIVideo",
+    "inputs": {
+      "profile_id": "mock",
+      "model": "mock-video",
+      "operation": "video-generation",
+      "prompt": "离线接口验收",
+      "params_json": "{\"generate_audio\":false}",
+      "wait_for_result": true,
+      "timeout": 1800,
+      "mode": "auto",
+      "reference_audio_1": [
+        "1",
+        4
+      ]
+    },
+    "_meta": {
+      "title": "EasyAPI 视频生成"
+    }
+  },
+  "3": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "filename_prefix": "EasyAPI-verify/audio-reference",
+      "format": "auto",
+      "format.codec": "auto",
+      "codec": "auto",
+      "video": [
+        "2",
+        5
+      ]
+    },
+    "_meta": {
+      "title": "Save Video"
+    }
+  }
+}

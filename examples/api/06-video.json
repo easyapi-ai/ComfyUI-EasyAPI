@@ -8,10 +8,11 @@
       "prompt": "离线接口验收",
       "params_json": "{}",
       "wait_for_result": true,
-      "timeout": 1800
+      "timeout": 1800,
+      "mode": "auto"
     },
     "_meta": {
-      "title": "EasyAPI 视频与多参考"
+      "title": "EasyAPI 视频生成"
     }
   },
   "2": {

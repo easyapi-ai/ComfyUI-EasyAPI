@@ -43,7 +43,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.path = Path(self.temp.name) / "image.png"
         self.path.write_bytes(b"image-bytes")
         self.source = MediaSource("image", str(self.path), "first_frame", "image/png")
-        self.client = types.SimpleNamespace(upload_media=AsyncMock(return_value={"url": "https://asset.invalid/ref.png"}))
+        self.client = types.SimpleNamespace(profile_id="mock", upload_media=AsyncMock(return_value={"url": "https://asset.invalid/ref.png"}))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -135,12 +135,90 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(body["images"][0].startswith("data:image/png;base64,"))
         self.client.upload_media.assert_not_awaited()
 
-    async def test_catalog_is_exposed_by_native_node_and_generation_is_effectful(self):
-        schema = self.nodes.EasyAPINativeRequest.define_schema()
+    async def test_hidden_nodes_are_not_registered_and_video_uses_one_operation(self):
+        registered = {cls.define_schema().node_id for cls in self.nodes.NODE_CLASSES}
+        self.assertEqual(len(registered), 14)
+        self.assertFalse(registered & {"EasyAPIModeration", "EasyAPISearch", "EasyAPIRerank",
+                                       "EasyAPIEmbedding", "EasyAPINativeRequest",
+                                       "EasyAPIMidjourney", "EasyAPISuno"})
+        schema = self.nodes.EasyAPIVideo.define_schema()
         operations = next(i.options for i in schema.inputs if i.id == "operation")
-        self.assertIn("custom-user-request", operations)
+        self.assertEqual(operations, ["video-generation"])
         self.assertTrue(schema.not_idempotent)
-        self.assertEqual({"profile_id", "model", "params_json"} - {i.id for i in schema.inputs}, set())
+        self.assertEqual({"profile_id", "model", "params_json", "first_frame", "last_frame",
+                          "reference_image_1", "reference_audio_2", "references"} - {i.id for i in schema.inputs}, set())
+
+    async def test_typed_video_roles_select_the_schema_then_submit_one_unified_request(self):
+        from easyapi_comfy.video import select_video_scenario
+
+        schema = {"type": "object", "properties": {"images": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["images"]}
+        video = {"roles": ["first_frame", "last_frame"], "scenarios": ["text-to-video", "image-to-video"],
+                 "variants": {"image-to-video": {"roles": ["first_frame", "last_frame"], "request_schema": schema}}}
+        self.assertEqual(select_video_scenario("auto", {"first_frame"}, video), "image-to-video")
+        with self.assertRaisesRegex(ValueError, "reference_audio"):
+            select_video_scenario("auto", {"reference_audio"}, video)
+        self.client.model_schema = AsyncMock(return_value={"declared": True, "matched": True, "video": video})
+        self.client.request = AsyncMock(return_value=self.nodes.APIResponse(data={"text": "mock"}))
+        rt = types.SimpleNamespace(client=lambda _: self.client, output_dir=self.path.parent)
+
+        async def encode_inputs(**kwargs):
+            return [self.source] if kwargs.get("image") else []
+
+        with patch.object(self.nodes, "get_runtime", return_value=rt), \
+                patch.object(self.nodes, "_interrupt"), \
+                patch.object(self.nodes.media, "encode_inputs", side_effect=encode_inputs):
+            await self.nodes.EasyAPIVideo.execute(profile_id="mock", model="frames", prompt="test", last_frame=True)
+
+        self.client.request.assert_awaited_once()
+        args, kw = self.client.request.await_args
+        self.assertEqual(args, ("POST", "/v1/videos"))
+        self.assertEqual(kw["body"]["input_references"], [{"file_index": 0, "role": "last_frame", "type": "image"}])
+        self.assertNotIn("images", kw["body"])
+        self.assertNotIn("mode", kw["body"])
+        self.assertEqual(kw["files"][0].field, "input_references[0]")
+        self.assertEqual(self.source.role, "first_frame")
+
+    async def test_video_reply_docs_validate_file_as_resolved_url_without_changing_request(self):
+        schema = {"type": "object", "required": ["input_references"], "properties": {
+            "input_references": {"type": "array", "items": {
+                "type": "object", "required": ["type", "role", "url"], "additionalProperties": False,
+                "properties": {"type": {"const": "image"}, "role": {"const": "first_frame"}, "url": {"type": "string"}},
+            }}
+        }}
+        body = {"input_references": [{"file_index": 0, "type": "image", "role": "first_frame"}]}
+        metadata = {"declared": True, "matched": True, "request_schema": schema}
+        protocol = get_protocol("video-generation")
+        files = [self.nodes.UploadFile("input_references[0]", self.path)]
+        await self.nodes.validate_request(self.client, "test", protocol, body, files, metadata=metadata)
+        self.assertEqual(body["input_references"], [{"file_index": 0, "type": "image", "role": "first_frame"}])
+        with self.assertRaisesRegex(ValueError, "url"):
+            await self.nodes.validate_request(self.client, "test", protocol, body, [], metadata=metadata)
+
+    async def test_video_preserves_typed_dynamic_parameters_and_connected_media_override_legacy_values(self):
+        _, body, files, _ = await self.prepare("video-generation", [self.source], {
+            "duration": -1, "return_last_frame": False, "image": "https://old.invalid/frame.png",
+            "images": ["https://old.invalid/another.png"],
+        })
+        self.assertEqual(files, [])
+        self.assertEqual(body["duration"], -1)
+        self.assertIs(body["return_last_frame"], False)
+        self.assertNotIn("image", body)
+        self.assertNotIn("images", body)
+        self.assertEqual(body["input_references"][0]["role"], "first_frame")
+        self.assertTrue(body["input_references"][0]["url"].startswith("data:image/png;base64,"))
+        self.client.upload_media.assert_not_awaited()
+
+    async def test_motion_tool_uses_its_platform_json_contract(self):
+        clip = MediaSource("video", url="https://asset.invalid/motion.mp4", role="reference_video")
+        path, body, files, _ = await self.nodes.prepare_request(self.client, get_protocol("tool-motion-video"),
+                                                                 "", "", {}, [self.source, clip])
+        self.assertEqual(path, "/v1/tools/motion-video")
+        self.assertEqual(files, [])
+        self.assertEqual(body["video"], clip.url)
+        self.assertTrue(body["image"].startswith("data:image/png;base64,"))
+        self.assertNotIn("model", body)
+        self.client.upload_media.assert_not_awaited()
 
     async def test_model_schema_checks_types_required_files_counts_and_roles(self):
         schema = {"type": "object", "properties": {"duration": {"type": "integer", "maximum": 10},

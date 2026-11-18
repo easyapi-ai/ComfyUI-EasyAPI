@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import aiohttp
 from aiohttp import web
@@ -288,6 +289,80 @@ class DiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ManagementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_and_proxied_https_manage_profiles_with_separate_sessions(self):
+        http_host = "comfy.test:3106"
+        https_host = "comfy.test:3443"
+        proxy_backend_host = "comfytv:8188"
+        http_origin = f"http://{http_host}"
+        https_origin = f"https://{https_host}"
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            "os.environ", {"EASYAPI_PUBLIC_ORIGIN": "https://COMFY.TEST:3443/"},
+        ):
+            runtime = Runtime(directory)
+            app = web.Application()
+            app.add_routes(build_routes(runtime))
+            try:
+                async with TestClient(TestServer(app), cookie_jar=aiohttp.DummyCookieJar()) as client:
+                    async def bootstrap(host, origin=None, cookies=None):
+                        headers = {"Host": host}
+                        if cookies:
+                            headers["Cookie"] = cookies
+                        if origin:
+                            headers["Origin"] = origin
+                            response = await client.post("/easyapi/bootstrap", headers=headers)
+                        else:
+                            response = await client.get("/easyapi/bootstrap", headers=headers)
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(len(response.cookies), 1)
+                        cookie = next(iter(response.cookies.values()))
+                        self.assertTrue(cookie["httponly"])
+                        self.assertEqual(cookie["samesite"], "Strict")
+                        self.assertEqual(cookie["path"], "/")
+                        return cookie, (await response.json())["management_nonce"]
+
+                    http_cookie, http_nonce = await bootstrap(http_host)
+                    http_cookie_header = f"{http_cookie.key}={http_cookie.value}"
+                    http_headers = {"Host": http_host, "Origin": http_origin, "Cookie": http_cookie_header,
+                                    "X-EasyAPI-Management": http_nonce}
+                    body = {"base_url": "https://example.invalid", "api_key": "fixture-key"}
+                    path = "/easyapi/profiles/saved"
+                    saved = await client.post(path, json=body, headers=http_headers)
+                    self.assertEqual(saved.status, 200, await saved.text())
+                    self.assertFalse(http_cookie["secure"])
+                    self.assertEqual(runtime.profiles.get("saved")["api_key"], "fixture-key")
+                    self.assertEqual(await bootstrap(http_host, http_origin, http_cookie_header), (http_cookie, http_nonce))
+
+                    https_cookie, https_nonce = await bootstrap(https_host)
+                    self.assertTrue(https_cookie["secure"])
+                    self.assertNotEqual(http_cookie.key, https_cookie.key)
+                    self.assertNotEqual(http_nonce, https_nonce)
+                    https_cookie_header = f"{http_cookie_header}; {https_cookie.key}={https_cookie.value}"
+                    self.assertEqual(await bootstrap(proxy_backend_host, https_origin, https_cookie_header), (https_cookie, https_nonce))
+                    https_headers = {"Host": proxy_backend_host, "Origin": https_origin, "Cookie": https_cookie_header,
+                                     "X-EasyAPI-Management": https_nonce}
+
+                    for origin in ("https://attacker.invalid", "null", f"http://{https_host}"):
+                        rejected = await client.delete(path, headers={**http_headers, "Origin": origin})
+                        self.assertEqual(rejected.status, 403)
+                        self.assertEqual(await rejected.text(), "Cross-origin EasyAPI request rejected")
+                    missing_origin = {key: value for key, value in http_headers.items() if key != "Origin"}
+                    self.assertEqual((await client.delete(path, headers=missing_origin)).status, 403)
+                    self.assertEqual((await client.delete(path, headers={**https_headers,
+                        "Cookie": http_cookie_header, "X-EasyAPI-Management": http_nonce})).status, 403)
+                    self.assertEqual((await client.delete(path, headers={**https_headers,
+                        "Cookie": f"{https_cookie.key}={http_cookie.value}", "X-EasyAPI-Management": http_nonce})).status, 403)
+                    self.assertEqual((await client.delete(path, headers={**http_headers,
+                        "X-EasyAPI-Management": https_nonce})).status, 403)
+                    insecure_authorization = await client.post("/easyapi/auth/start", json={}, headers=http_headers)
+                    self.assertEqual(insecure_authorization.status, 403)
+                    self.assertIn("HTTPS or localhost", await insecure_authorization.text())
+
+                    self.assertEqual((await client.post(path, json=body, headers=https_headers)).status, 200)
+                    self.assertEqual((await client.delete(path, headers=http_headers)).status, 200)
+                    self.assertEqual(runtime.profiles.list_public(), [])
+            finally:
+                await runtime.close()
+
     async def test_api_prefix_cookie_authenticates_mutations_and_websocket_handshake(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = Runtime(directory)
@@ -309,7 +384,7 @@ class ManagementTests(unittest.IsolatedAsyncioTestCase):
             try:
                 response = await client.get("/api/easyapi/bootstrap")
                 bootstrap = await response.json()
-                self.assertEqual(response.cookies["easyapi_management_session"]["path"], "/")
+                self.assertEqual(next(iter(response.cookies.values()))["path"], "/")
                 headers = {"Origin": origin, "X-EasyAPI-Management": bootstrap["management_nonce"]}
                 saved = await client.post("/api/easyapi/profiles/default", json={"base_url": "https://example.invalid", "api_key": "test-only-key"}, headers=headers)
                 self.assertEqual(saved.status, 200)

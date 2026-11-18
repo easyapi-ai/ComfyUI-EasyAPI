@@ -22,7 +22,8 @@ const context = { URL, Float32Array, Uint8Array, DataView, Set, Map, console,
   btoa: (v) => Buffer.from(v, 'binary').toString('base64'),
   atob: (v) => Buffer.from(v, 'base64').toString('binary'),
   app: { registerExtension() {} }, api: {},
-  document: { createElement: () => ({}), head: { append() {} } },
+  document: { createElement: () => ({ dataset: {} }), head: { append() {} } },
+  t: (key) => key, textKey: () => null,
   window: { addEventListener() {} }, WebSocket: { OPEN: 1 }
 };
 vm.createContext(context);

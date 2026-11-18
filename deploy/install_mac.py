@@ -79,12 +79,6 @@ elif PLUGIN.exists():
     raise RuntimeError('Existing unmanaged plugin directory; inspect it before replacing')
 PLUGIN.symlink_to(source, target_is_directory=True)
 
-profile_path = HOST / 'state/user/easyapi/profiles.json'
-profile_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-profiles = json.loads(profile_path.read_text()) if profile_path.exists() else {}
-profiles.setdefault('mock', {'id': 'mock', 'name': '离线测试（不计费）', 'base_url': 'http://comfytv-easyapi-mock:3199', 'api_key': 'mock-only-key'})
-write_private(profile_path, json.dumps(profiles, ensure_ascii=False, indent=2))
-
 mock = subprocess.run([DOCKER, 'inspect', 'comfytv-easyapi-mock'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 if mock.returncode == 0:
     run('rm', '-f', 'comfytv-easyapi-mock')
@@ -131,7 +125,7 @@ try:
             with urllib.request.urlopen('http://127.0.0.1:3106/object_info', timeout=3) as response:
                 nodes = json.load(response)
                 easyapi_nodes = [name for name in nodes if name.startswith('EasyAPI')]
-                if easyapi_nodes:
+                if len(easyapi_nodes) == 14:
                     healthy = True
                     break
         except Exception:

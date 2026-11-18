@@ -1,0 +1,940 @@
+{
+  "EasyAPIChat": {
+    "display_name": "EasyAPI Chat",
+    "description": "Create text and multimodal responses using models available to the selected connection and operation.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "chat": "Chat Completions",
+          "responses": "Responses",
+          "responses-compact": "Compact Responses",
+          "messages": "Claude Messages",
+          "completions": "Text completions",
+          "gemini-generate": "Gemini generation",
+          "gemini-stream": "Gemini streaming"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIImages": {
+    "display_name": "EasyAPI Images",
+    "description": "Generate or edit images, including asynchronous image tasks. Connect IMAGE and MASK inputs directly.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "image-generation": "Generate images",
+          "image-edit": "Edit images",
+          "image-task": "Submit image task",
+          "image-task-edit": "Submit image edit task"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIVideo": {
+    "display_name": "EasyAPI Video",
+    "description": "Generate video through the unified /v1/videos interface using typed first-frame, last-frame and reference inputs.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "video-generation": "Generate video"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      },
+      "mode": {
+        "name": "Input mode",
+        "tooltip": "Use auto to derive a supported video mode from the connected first frame, last frame and references. Changing the display language does not change the saved mode value."
+      },
+      "first_frame": {
+        "name": "First frame",
+        "tooltip": "Optional first-frame IMAGE. The selected model must support first-frame input."
+      },
+      "last_frame": {
+        "name": "Last frame",
+        "tooltip": "Optional last-frame IMAGE. Use with a first frame when required by the model."
+      },
+      "reference_image_1": {
+        "name": "Reference image 1",
+        "tooltip": "Optional image reference 1. The selected model determines support and combinations."
+      },
+      "reference_image_2": {
+        "name": "Reference image 2",
+        "tooltip": "Optional image reference 2. The selected model determines support and combinations."
+      },
+      "reference_video_1": {
+        "name": "Reference video 1",
+        "tooltip": "Optional video reference 1. The selected model determines support and combinations."
+      },
+      "reference_video_2": {
+        "name": "Reference video 2",
+        "tooltip": "Optional video reference 2. The selected model determines support and combinations."
+      },
+      "reference_audio_1": {
+        "name": "Reference audio 1",
+        "tooltip": "Optional audio reference 1. The selected model determines support and combinations."
+      },
+      "reference_audio_2": {
+        "name": "Reference audio 2",
+        "tooltip": "Optional audio reference 2. The selected model determines support and combinations."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPISpeech": {
+    "display_name": "EasyAPI Speech",
+    "description": "Synthesize speech with a compatible speech model and return native ComfyUI AUDIO.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "audio-speech": "Synthesize speech"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPITranscribe": {
+    "display_name": "EasyAPI Transcribe",
+    "description": "Transcribe or translate connected audio with a compatible operation and model.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "audio-transcriptions": "Transcribe audio",
+          "audio-translations": "Translate audio"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPITools": {
+    "display_name": "EasyAPI Creative Tools",
+    "description": "Run creative tools enabled by the platform. Availability and configured models depend on the connection.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "tool-remove-watermark": "Remove watermark",
+          "tool-remove-background": "Remove background",
+          "tool-upscale": "Upscale image",
+          "tool-image-text": "Edit text in image",
+          "tool-motion-video": "Motion video"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPICountTokens": {
+    "display_name": "EasyAPI Count Tokens",
+    "description": "Count tokens for a compatible message request without generating a response.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "messages-count-tokens": "Count message tokens"
+        }
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "wait_for_result": {
+        "name": "Wait for result",
+        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIMedia": {
+    "display_name": "EasyAPI References",
+    "description": "Group local media or existing URLs with explicit reference roles for supported operations.",
+    "inputs": {
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      },
+      "url": {
+        "name": "Existing media URL",
+        "tooltip": "Existing HTTP(S) media URL. It is referenced directly when the selected operation supports URLs."
+      },
+      "kind": {
+        "name": "Media type",
+        "tooltip": "Media type for an existing URL. This value is not a model or protocol name.",
+        "options": {
+          "image": "Image",
+          "audio": "Audio",
+          "video": "Video",
+          "file": "File"
+        }
+      },
+      "role": {
+        "name": "Reference role",
+        "tooltip": "Role carried by this reference, such as first_frame, last_frame or reference_image. Unsupported roles are not silently changed."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIJSON": {
+    "display_name": "EasyAPI JSON",
+    "description": "Parse, inspect and modify JSON while preserving numbers, booleans, arrays and objects.",
+    "inputs": {
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "parse": "Parse JSON",
+          "get": "Get value",
+          "merge": "Merge objects",
+          "set": "Set value",
+          "append": "Append item",
+          "stringify": "Format JSON"
+        }
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "path": {
+        "name": "JSON path",
+        "tooltip": "Dot-separated JSON path. Use a numeric segment for an array index."
+      },
+      "value": {
+        "name": "Value",
+        "tooltip": "JSON value to read or modify."
+      },
+      "other": {
+        "name": "Other value",
+        "tooltip": "JSON value used by merge, set or append."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "JSON"
+      },
+      "1": {
+        "name": "Text"
+      }
+    }
+  },
+  "EasyAPITaskQuery": {
+    "display_name": "EasyAPI Task Status",
+    "description": "Query an existing task once. This node never submits another generation.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "task_id": {
+        "name": "Task ID",
+        "tooltip": "ID of an existing task. Querying or downloading does not submit a new generation."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "video-generation": "Generate video",
+          "image-task": "Submit image task",
+          "image-task-edit": "Submit image edit task",
+          "tool-motion-video": "Motion video"
+        }
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "task": {
+        "name": "Task handle",
+        "tooltip": "Persisted task handle from a submission, query or wait node."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPITaskWait": {
+    "display_name": "EasyAPI Wait for Task",
+    "description": "Resume waiting for a stored task. Stopping local waiting preserves its handle.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "task_id": {
+        "name": "Task ID",
+        "tooltip": "ID of an existing task. Querying or downloading does not submit a new generation."
+      },
+      "operation": {
+        "name": "Operation",
+        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
+        "options": {
+          "video-generation": "Generate video",
+          "image-task": "Submit image task",
+          "image-task-edit": "Submit image edit task",
+          "tool-motion-video": "Motion video"
+        }
+      },
+      "timeout": {
+        "name": "Wait timeout (seconds)",
+        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
+      },
+      "task": {
+        "name": "Task handle",
+        "tooltip": "Persisted task handle from a submission, query or wait node."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIResultDownload": {
+    "display_name": "EasyAPI Download Results",
+    "description": "Download and decode existing task results without submitting another generation.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "task_id": {
+        "name": "Task ID",
+        "tooltip": "ID of an existing task. Querying or downloading does not submit a new generation."
+      },
+      "task": {
+        "name": "Task handle",
+        "tooltip": "Persisted task handle from a submission, query or wait node."
+      },
+      "result": {
+        "name": "Result JSON",
+        "tooltip": "Existing response JSON to download or decode."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      },
+      "1": {
+        "name": "JSON"
+      },
+      "2": {
+        "name": "Images"
+      },
+      "3": {
+        "name": "Mask"
+      },
+      "4": {
+        "name": "Audio"
+      },
+      "5": {
+        "name": "Video"
+      },
+      "6": {
+        "name": "Task"
+      },
+      "7": {
+        "name": "References"
+      }
+    }
+  },
+  "EasyAPIRealtime": {
+    "display_name": "EasyAPI Realtime",
+    "description": "Run a browser realtime conversation independently of the queue; queue execution reads a frozen text and audio snapshot.",
+    "inputs": {
+      "profile_id": {
+        "name": "Connection",
+        "tooltip": "Connection profile stored on the ComfyUI server. No API key is saved in the workflow."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
+      },
+      "params_json": {
+        "name": "Advanced parameters",
+        "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
+      },
+      "snapshot_id": {
+        "name": "Frozen conversation",
+        "tooltip": "Snapshot ID filled after freezing or applying a realtime conversation. Queue execution reads this snapshot without opening a microphone."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Conversation text"
+      },
+      "1": {
+        "name": "Assistant audio"
+      },
+      "2": {
+        "name": "Conversation record"
+      }
+    }
+  },
+  "EasyAPIPreview": {
+    "display_name": "EasyAPI Preview",
+    "description": "Preview connected text, JSON, images, audio, video or reference groups without calling a generation API.",
+    "inputs": {
+      "text": {
+        "name": "Text",
+        "tooltip": "Text input or preview content."
+      },
+      "json_value": {
+        "name": "JSON",
+        "tooltip": "JSON value to preview."
+      },
+      "image": {
+        "name": "Image",
+        "tooltip": "ComfyUI IMAGE input. The connected image is used directly without manually creating a URL."
+      },
+      "mask": {
+        "name": "Mask",
+        "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
+      },
+      "audio": {
+        "name": "Audio",
+        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
+      },
+      "video": {
+        "name": "Video",
+        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
+      },
+      "references": {
+        "name": "Additional references",
+        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+      }
+    },
+    "outputs": {}
+  }
+}

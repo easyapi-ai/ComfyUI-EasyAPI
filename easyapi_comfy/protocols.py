@@ -66,11 +66,41 @@ PROTOCOLS = [
     _op("model", "/v1/models/{model}", "utility", method="GET"),
     _op("generation-bill", "/v1/generation", "utility", method="GET"),
 ]
+
+
+def basic_form_schema(operation: str | None) -> dict:
+    """Fields defined by a gateway protocol, independent of a model's metadata."""
+    text = {"temperature": {"type": "number"}, "stream": {"type": "boolean"}}
+    image = {"size": {"type": "string"}, "n": {"type": "integer", "minimum": 1}}
+    if operation in {"chat", "completions", "messages"}:
+        fields = {**text, "max_tokens": {"type": "integer", "minimum": 1}}
+    elif operation == "responses":
+        fields = {**text, "max_output_tokens": {"type": "integer", "minimum": 1}}
+    elif operation in {"gemini-generate", "gemini-stream"}:
+        fields = {"generationConfig": {"type": "object", "x-ui-group": "common", "properties": {
+            "temperature": {"type": "number"}, "maxOutputTokens": {"type": "integer", "minimum": 1},
+        }}}
+    elif operation in {"image-generation", "image-edit", "image-task", "image-task-edit"}:
+        fields = image
+    elif operation == "video-generation":
+        fields = {**{key: {"type": "string"} for key in ("resolution", "aspect_ratio")},
+                  "duration": {"type": "integer"}}
+    elif operation == "audio-speech":
+        fields = {"voice": {"type": "string"}, "speed": {"type": "number"}, "response_format": {"type": "string"}}
+    elif operation in {"audio-transcriptions", "audio-translations"}:
+        fields = {"temperature": {"type": "number"}, "response_format": {"type": "string"}}
+        if operation == "audio-transcriptions":
+            fields["language"] = {"type": "string"}
+    elif operation == "realtime":
+        fields = {"voice": {"type": "string"}, "instructions": {"type": "string"}}
+    else:
+        fields = {}
+    return {"type": "object", "properties": fields}
 for tool in ("remove-watermark", "remove-background", "upscale", "image-text", "motion-video"):
     PROTOCOLS.append(_op("tool-" + tool, "/v1/tools/" + tool,
-                         "video" if tool == "motion-video" else "image", transport="multipart",
+                         "video" if tool == "motion-video" else "image", transport="json" if tool == "motion-video" else "multipart",
                          polling=VIDEO_POLL if tool == "motion-video" else None,
-                         media_fields={"image": "image"}))
+                         media_fields={"image": "image", "video": "video"} if tool == "motion-video" else {"image": "image"}))
 for action in ("imagine", "action", "shorten", "modal", "change", "simple-change", "describe", "blend", "edits", "video", "upload-discord-images"):
     PROTOCOLS.append(_op("mj-" + action, "/mj/submit/" + action, "midjourney", polling=MJ_POLL))
 PROTOCOLS.extend([

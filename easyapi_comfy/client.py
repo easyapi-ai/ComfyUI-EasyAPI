@@ -7,6 +7,7 @@ import copy
 import json
 import mimetypes
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,7 @@ from urllib.parse import quote, urljoin, urlsplit
 import aiohttp
 
 from .profiles import normalize_base_url
-from .protocols import get_protocol, validate_path
+from .protocols import PROTOCOLS, basic_form_schema, get_protocol, validate_path
 
 
 @dataclass
@@ -59,6 +60,19 @@ def origin(url: str) -> tuple:
     return parsed.scheme.lower(), parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
 
 
+def credential_headers(api_key: str, client_id: str = "") -> dict:
+    if not api_key:
+        return {}
+    if any(char in api_key for char in "\r\n"):
+        raise ValueError("API key contains invalid characters")
+    headers = {"Authorization": "Bearer " + api_key}
+    if client_id:
+        if not re.fullmatch(r"[a-f0-9]{64}", client_id):
+            raise ValueError("Connection client_id must be 64 lowercase hexadecimal characters")
+        headers["X-EasyAPI-Client-Id"] = client_id
+    return headers
+
+
 def normalize_parameter_schema(value):
     """Normalize legacy model.params constraints without dropping nested metadata."""
     if not isinstance(value, dict):
@@ -84,6 +98,222 @@ def normalize_parameter_schema(value):
     return result
 
 
+VIDEO_ROLES = ("first_frame", "last_frame", "reference_image", "reference_video", "reference_audio")
+VIDEO_SCENARIOS = ("text-to-video", "image-to-video", "reference-to-video")
+_ENDPOINT_ALIASES = {
+    "openai": "chat", "openai-response": "responses", "openai-response-compact": "responses-compact",
+    "openai-alpha-search": "alpha-search", "anthropic": "messages", "gemini": "gemini-generate",
+    "api-video": "video-generation", "openai-video": "video-generation", "video": "video-generation",
+    "jina-rerank": "rerank", "audio-transcription": "audio-transcriptions",
+}
+
+
+def normalize_locale(value=None):
+    value = str(value or "zh-CN").strip().replace("_", "-")
+    aliases = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-tw": "zh-TW", "zh-hans": "zh-CN", "zh-hant": "zh-TW"}
+    value = aliases.get(value.lower(), value)
+    if not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", value):
+        raise ValueError("Invalid interface locale")
+    return value
+
+
+def canonical_family(value):
+    value = str(value or "").strip().lower()
+    aliases = {"文本": "text", "文字": "text", "画像": "image", "图像": "image", "圖片": "image", "图片": "image",
+               "视频": "video", "影片": "video", "動画": "video", "vidéo": "video", "видео": "video",
+               "音频": "audio", "音訊": "audio", "音声": "audio", "аудио": "audio", "texte": "text", "текст": "text"}
+    value = aliases.get(value, value)
+    return value if value in {"text", "image", "video", "audio", "embedding", "rerank", "midjourney", "suno", "media", "utility"} else None
+
+
+def _path_shape(path):
+    path = str(path or "").split("?", 1)[0].rstrip("/")
+    path = re.sub(r"\{[^}]+\}", "{}", path)
+    return re.sub(r"/:[A-Za-z_][A-Za-z0-9_]*", "/{}", path)
+
+
+def _entry_matches(entry, operation):
+    key = entry.get("key") or entry.get("type") or entry.get("id")
+    path = entry.get("path")
+    if path:
+        if _path_shape(path) != _path_shape(operation["path"]):
+            return False
+    elif _ENDPOINT_ALIASES.get(key, key) != operation["id"]:
+        return False
+    transport = entry.get("transport")
+    if not transport and key in {"image-task-edit", "async-image-edit"}:
+        transport = "multipart"
+    elif not transport and key in {"image-task", "async-image-generation"}:
+        transport = "json"
+    elif not transport and key == "realtime":
+        transport = "websocket"
+    if operation["path"] == "/v1/images/tasks" and operation["method"] == "POST":
+        # JSON generation and multipart edits share a route, not a capability.
+        if transport != operation["transport"]:
+            return False
+    method = str(entry.get("method") or (operation["method"] if not path else "GET" if transport == "websocket" else "POST")).upper()
+    if method != operation["method"]:
+        return False
+    if transport == "websocket" and operation["transport"] != "websocket":
+        return False
+    for name, value in (operation.get("query") or {}).items():
+        if name in (entry.get("query") or {}) and entry["query"][name] != value:
+            return False
+    return True
+
+
+def _endpoint_entries(data):
+    if not isinstance(data, dict):
+        return []
+    entries = []
+    raw = data.get("endpoints") or []
+    if isinstance(raw, dict):
+        raw = [{"key": key, **(value if isinstance(value, dict) else {"path": value})} for key, value in raw.items()]
+    for entry in raw:
+        if isinstance(entry, dict):
+            entries.append(entry)
+            entries.extend(item for item in entry.get("variants") or [] if isinstance(item, dict))
+    entries.extend(item for item in data.get("variants") or [] if isinstance(item, dict))
+    for entry in list(entries):
+        if isinstance(entry.get("native"), dict) and entry["native"].get("path"):
+            entries.append(entry["native"])
+    return entries
+
+
+def _entry_operations(entries):
+    operations = {operation["id"] for entry in entries for operation in PROTOCOLS if _entry_matches(entry, operation)}
+    # Gemini's endpoint type identifies its generateContent protocol, whose
+    # documented streaming action shares the model capability.
+    for entry in entries:
+        if (entry.get("type") or entry.get("key")) == "gemini":
+            if "gemini-generate" in operations:
+                operations.add("gemini-stream")
+            if "gemini-compatible-generate" in operations:
+                operations.add("gemini-compatible-stream")
+    return operations
+
+
+def _capability_operations(row):
+    result, declared = set(), False
+    for key in ("operations", "supported_operations"):
+        if isinstance(row.get(key), list):
+            result.update(value for value in row[key] if isinstance(value, str))
+            declared = True
+    caps = row.get("capabilities") or {}
+    if isinstance(caps, dict):
+        for operation in PROTOCOLS:
+            for key in (operation["id"], operation["id"].replace("-", "_")):
+                if isinstance(caps.get(key), bool):
+                    declared = True
+                    if caps[key]:
+                        result.add(operation["id"])
+    return result, declared
+
+
+def _schema_corrections(model, operation, schema):
+    """Small, evidenced gateway metadata repairs, never inferred by vendor family.
+
+    Evidence: anonymous token.easyapi.com/pricing/schema samples, 2026-11-18.
+    Fix only the affected exact model/field shapes; retain upstream metadata in
+    docs, and expose every applied compatibility repair to the UI.
+    """
+    schema = normalize_parameter_schema(schema if isinstance(schema, dict) else {})
+    props, repairs = schema.get("properties") or {}, []
+    if model == "seedance-2.0-mini":
+        duration = props.get("duration")
+        if isinstance(duration, dict) and duration.get("minimum") == 4 and duration.get("maximum") == 15:
+            ordinary = copy.deepcopy(duration)
+            props["duration"] = {"type": "integer", "description": duration.get("description", ""),
+                                 "anyOf": [{"const": -1}, ordinary]}
+            repairs.append("seedance-mini-smart-duration")
+        tier = props.get("service_tier")
+        if isinstance(tier, dict) and "flex" in tier.get("enum", []):
+            tier["enum"] = [value for value in tier["enum"] if value != "flex"]
+            repairs.append("seedance-mini-no-flex")
+    if model == "qwen-audio-3.0-tts-plus":
+        hints = props.get("language_hints")
+        if isinstance(hints, dict) and hints.get("type") == "array" and isinstance(hints.get("enum"), list):
+            values = hints["enum"]
+            if values and all(isinstance(value, str) for value in values):
+                hints.setdefault("items", {"type": "string"})["enum"] = hints.pop("enum")
+                repairs.append("tts-language-hints-items")
+        for name in ("aigc_propagator", "aigc_propagate_id"):
+            prop = props.get(name)
+            if isinstance(prop, dict) and prop.get("default") in ("阿里云UID", "本次请求Request ID"):
+                prop.pop("default")
+                repairs.append("tts-placeholder-default:" + name)
+    if model == "happyhorse-1.1-r2v" and isinstance(props.get("images"), dict):
+        images = props["images"]
+        items = images.get("items") or {}
+        if items.get("type") == "object" and {"type", "url"}.issubset(items.get("properties", {})):
+            images["items"] = {"type": "string", "description": "Reference image URL or data URI"}
+            repairs.append("happyhorse-r2v-unified-images-strings")
+    return schema, repairs
+
+
+def _video_roles(schema, model=None, scenario=None):
+    props = schema.get("properties") or {}
+    refs = props.get("input_references") or {}
+    role = ((refs.get("items") or {}).get("properties") or {}).get("role") or {}
+    values = [value for value in role.get("enum", []) if value in VIDEO_ROLES]
+    if values:
+        return values, "input_references"
+    if "images" in props:
+        as_reference = model == "happyhorse-1.1-r2v" or scenario == "reference-to-video"
+        return (["reference_image"] if as_reference else ["first_frame"]), "images"
+    if "image" in props or "input_reference" in props:
+        return ["first_frame"], "image" if "image" in props else "input_reference"
+    return [], None
+
+
+def _scenario_label(key, locale):
+    labels = {
+        "zh": ("文生视频", "图生视频", "参考生视频"), "en": ("Text to video", "Image to video", "Reference to video"),
+        "ja": ("テキストから動画", "画像から動画", "参照素材から動画"), "fr": ("Texte vers vidéo", "Image vers vidéo", "Référence vers vidéo"),
+        "ru": ("Видео из текста", "Видео из изображения", "Видео по референсу"), "vi": ("Văn bản thành video", "Ảnh thành video", "Video từ tư liệu tham chiếu"),
+    }
+    language = normalize_locale(locale).split("-", 1)[0].lower()
+    return labels.get(language, labels["en"])[VIDEO_SCENARIOS.index(key)]
+
+
+def _video_metadata(model, common_schema, variants, locale=None):
+    result = {"roles": [], "scenarios": [], "variants": {}}
+    for item in variants:
+        key = item.get("key")
+        if key not in VIDEO_SCENARIOS:
+            continue
+        schema, repairs = _schema_corrections(model, "video-generation", item.get("request_schema") or common_schema)
+        if isinstance(item.get("required"), list):
+            schema["required"] = list(item["required"])
+        roles, field = _video_roles(schema, model, key)
+        if key == "text-to-video":
+            roles = []
+        elif model.lower().startswith("wan3"):
+            frame_roles = {"first_frame", "last_frame"}
+            roles = [role for role in roles if (role in frame_roles) == (key == "image-to-video")]
+        result["variants"][key] = {"label": _scenario_label(key, locale), "roles": roles, "media_field": field, "request_schema": schema,
+                                   "required": item.get("required", schema.get("required", [])), "corrections": repairs}
+        result["scenarios"].append(key)
+    common_roles, common_field = _video_roles(common_schema, model)
+    if not result["scenarios"]:
+        if common_roles:
+            if not set(common_schema.get("required") or []) & {"image", "images", "input_reference", "input_references"}:
+                result["scenarios"].append("text-to-video")
+            if "first_frame" in common_roles or common_field in {"image", "images", "input_reference"}:
+                result["scenarios"].append("image-to-video")
+            if any(role.startswith("reference_") for role in common_roles):
+                result["scenarios"].append("reference-to-video")
+        elif common_schema.get("properties"):
+            result["scenarios"].append("text-to-video")
+        for scenario in result["scenarios"]:
+            result["variants"][scenario] = {"label": _scenario_label(scenario, locale), "roles": [] if scenario == "text-to-video" else common_roles,
+                "media_field": common_field, "request_schema": copy.deepcopy(common_schema),
+                "required": list(common_schema.get("required", [])), "corrections": []}
+    # The union is for visible sockets; validation uses the selected scene.
+    result["roles"] = [role for role in VIDEO_ROLES if role in common_roles or any(role in entry["roles"] for entry in result["variants"].values())]
+    return result
+
+
 class EasyAPIClient:
     def __init__(self, profile=None, api_key: str | None = None, *, base_url: str | None = None,
                  timeout: float = 1800):
@@ -92,6 +322,7 @@ class EasyAPIClient:
             profile = {"base_url": profile}
         self.base_url = normalize_base_url(base_url or profile.get("base_url", "https://token.easyapi.com"))
         self.api_key = api_key if api_key is not None else str(profile.get("api_key") or "")
+        self.client_id = str(profile.get("client_id") or "")
         self.profile_id = profile.get("id", "default")
         self.timeout = timeout
         self.max_response_bytes = 64 * 1024 * 1024
@@ -130,15 +361,18 @@ class EasyAPIClient:
 
     def headers(self) -> dict:
         self._assert_current()
-        return {"Authorization": "Bearer " + self.api_key} if self.api_key else {}
+        return credential_headers(self.api_key, self.client_id)
 
-    async def request(self, method, path, *, body=None, files=None, query=None, stream=False) -> APIResponse:
+    async def request(self, method, path, *, body=None, files=None, query=None, stream=False,
+                      locale=None, authenticated=True) -> APIResponse:
         method = str(method).upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise ValueError("Unsupported HTTP method")
         url = self.url(path)
         session = await self.session()
-        headers = self.headers() | {"Accept": "text/event-stream" if stream else "application/json"}
+        headers = (self.headers() if authenticated else {}) | {"Accept": "text/event-stream" if stream else "application/json"}
+        if locale is not None:
+            headers["Accept-Language"] = normalize_locale(locale)
         kwargs = {"params": query, "headers": headers, "allow_redirects": False}
         with contextlib.ExitStack() as opened:
             if files:
@@ -287,92 +521,237 @@ class EasyAPIClient:
         finally:
             temporary.unlink(missing_ok=True)
 
-    async def discover_models(self, family=None, *, refresh=False) -> list[dict]:
-        self._assert_current()
-        cached = self._cache.get("models")
-        if not refresh and cached and time.monotonic() - cached[0] < 300:
-            rows = cached[1]
-        else:
-            response = await self.request("GET", "/v1/models")
-            rows = (response.data or {}).get("data", [])
-            if not isinstance(rows, list):
-                raise EasyAPIError("Model catalog is not a list")
-            self._cache["models"] = time.monotonic(), copy.deepcopy(rows)
-        if family:
-            want = str(family).lower()
-            rows = [row for row in rows if str(row.get("category") or "").lower() == want]
-        return copy.deepcopy(rows)
-
-    async def model_schema(self, model, operation=None, *, refresh=False) -> dict:
-        self._assert_current()
-        cache_key = (model, operation)
+    async def _metadata(self, path, *, query=None, locale=None, refresh=False):
+        locale = normalize_locale(locale)
+        cache_key = ("metadata", path, tuple(sorted((query or {}).items())), locale)
         cached = self._cache.get(cache_key)
         if not refresh and cached and time.monotonic() - cached[0] < 300:
             return copy.deepcopy(cached[1])
         try:
-            requested_protocol = get_protocol(operation) if operation else None
-        except ValueError:
-            requested_protocol = None
-        requested_path = requested_protocol.get("path") if requested_protocol else None
-        result = {"model": model, "operation": operation, "request_schema": {"type": "object", "properties": {}, "additionalProperties": True},
-                  "required": [], "source": "unavailable", "docs": None, "params": None,
-                  "matched": False, "schema_operation": None}
-        for path in ("/pricing/docs", "/pricing/schema", "/pricing/detail"):
-            try:
-                response = await self.request("GET", path, query={"model_name": model})
-            except EasyAPIError as exc:
-                if exc.status not in {0, 400, 401, 403, 404, 500, 502, 503}:
-                    raise
-                continue
+            response = await self.request("GET", path, query=query, locale=locale, authenticated=False)
             payload = response.data or {}
-            data = payload.get("data", payload) if isinstance(payload, dict) else {}
-            if not isinstance(data, dict):
-                continue
-            if path.endswith("/docs"):
-                result["docs"] = data
-                variants = data.get("variants") or []
-                if not variants:
-                    variants = [v for endpoint in data.get("endpoints", []) for v in endpoint.get("variants", [])]
-                selected = next((v for v in variants if operation and v.get("key") == operation), None)
-                endpoint = next((e for e in data.get("endpoints", [])
-                                 if operation and (e.get("key") == operation or (requested_path and e.get("path") == requested_path))), None)
-                # A generic video endpoint has several scene variants. Its common
-                # schema is safer than imposing the first scene's required fields.
-                selected = selected or endpoint
-                if not operation:
-                    selected = selected or (data.get("endpoints") or variants or [{}])[0]
-                if selected is None:
-                    result["source"] = "docs-no-operation-match"
+            value = payload.get("data", payload) if isinstance(payload, dict) else {}
+        except EasyAPIError as exc:
+            if exc.status not in {0, 400, 401, 403, 404, 429, 500, 502, 503, 504}:
+                raise
+            value = None
+        self._cache[cache_key] = time.monotonic(), copy.deepcopy(value)
+        return value
+
+    async def _public_catalog(self, *, locale, refresh=False):
+        pricing, schemas = await asyncio.gather(
+            self._metadata("/pricing", locale=locale, refresh=refresh),
+            self._metadata("/pricing/schema", query={"all": "1"}, locale=locale, refresh=refresh))
+        rows = pricing if isinstance(pricing, list) else (pricing or {}).get("items", [])
+        result = {str(item.get("model_name") or item.get("id")): copy.deepcopy(item)
+                  for item in rows if isinstance(item, dict) and (item.get("model_name") or item.get("id"))}
+        for item in (schemas or {}).get("items", []) if isinstance(schemas, dict) else []:
+            if isinstance(item, dict) and item.get("model"):
+                result.setdefault(item["model"], {}).update(copy.deepcopy(item))
+        return result
+
+    async def discover_models(self, family=None, operation=None, *, locale=None, refresh=False) -> list[dict]:
+        """The API-key catalog is the allow set; public metadata can only enrich it."""
+        self._assert_current()
+        locale = normalize_locale(locale)
+        if operation:
+            requested = get_protocol(operation)
+            if family and canonical_family(family) and requested["family"] != canonical_family(family):
+                raise ValueError("Operation does not belong to the requested node family")
+        want = canonical_family(family)
+        if family and want is None:
+            raise ValueError("Unknown node family")
+        cache_key = ("models", want, operation, locale)
+        cached = self._cache.get(cache_key)
+        if not refresh and cached and time.monotonic() - cached[0] < 300:
+            return copy.deepcopy(cached[1])
+        if not self.api_key:
+            raise EasyAPIError("Configure an API key before listing permitted models", status=401)
+        scope_key = ("allowed-models", locale)
+        scoped = self._cache.get(scope_key)
+        if not refresh and scoped and time.monotonic() - scoped[0] < 300:
+            allowed = copy.deepcopy(scoped[1])
+        else:
+            # Authentication failures must propagate. In particular an empty
+            # key catalog never falls back to the public pricing directory.
+            try:
+                response = await self.request("GET", "/v1/models", locale=locale)
+            except EasyAPIError as exc:
+                if exc.status in {401, 403}:
+                    # A rejected refresh invalidates every previously cached
+                    # scope/filter, not just the currently visible operation.
+                    self._cache = {key: value for key, value in self._cache.items()
+                                   if not isinstance(key, tuple) or key[0] not in {"models", "allowed-models"}}
+                raise
+            payload = response.data or {}
+            allowed = payload.get("data", []) if isinstance(payload, dict) else None
+            if not isinstance(allowed, list):
+                raise EasyAPIError("Model catalog is not a list")
+            allowed = [dict(item) if isinstance(item, dict) else {"id": item}
+                       for item in allowed if isinstance(item, (dict, str))]
+            allowed = [item for item in allowed if isinstance(item.get("id"), str) and item["id"]]
+            self._cache[scope_key] = time.monotonic(), copy.deepcopy(allowed)
+        if not allowed:
+            self._cache[cache_key] = time.monotonic(), []
+            return []
+        public = await self._public_catalog(locale=locale, refresh=refresh)
+        semaphore = asyncio.Semaphore(6)
+
+        async def enrich(row):
+            identifier = row["id"]
+            extra = public.get(identifier) or {}
+            category = canonical_family(row.get("category")) or canonical_family(extra.get("category"))
+            async with semaphore:
+                docs = await self._metadata("/pricing/docs", query={"model_name": identifier}, locale=locale, refresh=refresh)
+            docs = docs if isinstance(docs, dict) else {}
+            category = canonical_family(docs.get("category")) or category
+            if not category:
+                params = row.get("params") or extra.get("params") or {}
+                categories = [key for key in params if canonical_family(key)] if isinstance(params, dict) else []
+                if len(categories) == 1:
+                    category = canonical_family(categories[0])
+            candidates = ((docs, "docs"), (row, "model"), (extra, "public-schema"))
+            operations, authority = set(), None
+            for candidate, source in candidates:
+                entries = _endpoint_entries(candidate)
+                capabilities, explicit = _capability_operations(candidate)
+                if entries or explicit:
+                    operations, authority = _entry_operations(entries) | capabilities, source
                     break
-                result.update(matched=True, schema_operation=selected.get("key", operation))
-                schema = selected.get("request_schema") or data.get("request_schema") or {}
-                if schema.get("properties"):
-                    result.update(request_schema=schema, required=selected.get("required", schema.get("required", [])), source="docs", variant=selected)
-                    break
-            elif path.endswith("/schema"):
-                endpoints = data.get("endpoints") or []
-                if operation and endpoints and not any(e.get("type") == operation or (requested_path and e.get("path") == requested_path) for e in endpoints):
-                    result["source"] = "schema-no-operation-match"
-                    break
+            if authority is None:
+                endpoint_types = row.get("supported_endpoint_types") or extra.get("supported_endpoint_types") or []
+                # Channel-level unions are not model capabilities. They may
+                # provide hints for advanced selection but never authorize an
+                # audio subtype or inject another family into a normal picker.
+                hints = _entry_operations([{"type": value} for value in endpoint_types if isinstance(value, str)])
+                operations = hints
+            own_operations, _ = _capability_operations(row)
+            cross_family_declared = bool(operation and operation in operations and
+                                         (authority == "docs" or operation in own_operations))
+            if want and category and category != want and not cross_family_declared:
+                return None
+            if category and not cross_family_declared:
+                operations = {value for value in operations if any(p["id"] == value and p["family"] == category for p in PROTOCOLS)}
+            if operation and authority and operation not in operations:
+                return None
+            enriched = copy.deepcopy(row)
+            for field in ("name", "description", "architecture", "capabilities", "params", "endpoints"):
+                if not enriched.get(field) and extra.get(field) is not None:
+                    enriched[field] = copy.deepcopy(extra[field])
+            enriched.update(id=identifier, display_name=row.get("name") or extra.get("name") or identifier,
+                            category=category or "unknown", operations=sorted(operations),
+                            capability_status="declared" if authority in {"docs", "model"} else "inferred" if authority else "unknown",
+                            capability_source=authority or "channel-hints", allowed=True)
+            if operation and not authority:
+                enriched["operation_supported"] = None
+            elif operation:
+                enriched["operation_supported"] = True
+            return enriched
+
+        rows = [item for item in await asyncio.gather(*(enrich(row) for row in allowed)) if item is not None]
+        self._cache[cache_key] = time.monotonic(), copy.deepcopy(rows)
+        return rows
+
+    async def model_schema(self, model, operation=None, *, locale=None, variant=None, refresh=False) -> dict:
+        self._assert_current()
+        locale = normalize_locale(locale)
+        variant = str(variant or "").strip() or None
+        if variant not in (*VIDEO_SCENARIOS, None, "auto"):
+            # Other protocol variants are platform-declared keys, never paths.
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", variant or ""):
+                raise ValueError("Invalid schema variant")
+        if variant == "auto":
+            variant = None
+        cache_key = ("schema", model, operation, variant, locale)
+        cached = self._cache.get(cache_key)
+        if not refresh and cached and time.monotonic() - cached[0] < 300:
+            return copy.deepcopy(cached[1])
+        requested = get_protocol(operation) if operation else None
+        result = {"model": model, "operation": operation, "locale": locale,
+                  "request_schema": {"type": "object", "properties": {}, "additionalProperties": True},
+                  "required": [], "source": "unavailable", "docs": None, "params": None,
+                  "matched": False, "schema_operation": None, "variants": [], "selected_variant": None,
+                  "corrections": [], "warnings": []}
+        docs = await self._metadata("/pricing/docs", query={"model_name": model}, locale=locale, refresh=refresh)
+        docs = docs if isinstance(docs, dict) else {}
+        result["docs"] = docs or None
+        entries = _endpoint_entries(docs)
+        variants = [value for value in docs.get("variants") or [] if isinstance(value, dict)]
+        if not variants:
+            variants = [value for entry in docs.get("endpoints", []) if isinstance(entry, dict)
+                        for value in entry.get("variants") or [] if isinstance(value, dict)]
+        relevant_variants = [value for value in variants if not requested or _entry_matches(value, requested)]
+        result["variants"] = copy.deepcopy(relevant_variants)
+        selected = None
+        endpoint = next((entry for entry in docs.get("endpoints", [])
+                         if isinstance(entry, dict) and (not requested or _entry_matches(entry, requested))), None)
+        if variant:
+            selected = next((entry for entry in relevant_variants if entry.get("key") == variant), None)
+            if selected is None:
+                result["warnings"].append("Requested variant is not declared for this model and operation")
+                # An incompatible connected slot can infer a different scene.
+                # Keep the common model form available while the user fixes it.
+                selected = endpoint
+        else:
+            exact = next((entry for entry in relevant_variants if entry.get("key") == operation), None)
+            selected = exact or endpoint or (relevant_variants[0] if len(relevant_variants) == 1 else None)
+        if selected is not None:
+            result.update(matched=True, schema_operation=selected.get("key", operation),
+                          selected_variant=selected.get("key") if selected is not endpoint else None)
+            schema = selected.get("request_schema") or docs.get("request_schema") or {}
+            if schema.get("properties"):
+                result.update(request_schema=copy.deepcopy(schema), required=selected.get("required", schema.get("required", [])), source="docs")
+        if entries and requested and endpoint is None and not relevant_variants:
+            result["source"] = "docs-no-operation-match"
+        elif not result["request_schema"].get("properties"):
+            # Prefer the endpoint's exact key (api-video/openai/etc.) to the UI
+            # operation id when requesting platform endpoint_params overrides.
+            endpoint_key = (endpoint or {}).get("key") or (endpoint or {}).get("type") or operation
+            query = {"model_name": model}
+            if endpoint_key:
+                query["endpoint"] = endpoint_key
+            data = await self._metadata("/pricing/schema", query=query, locale=locale, refresh=refresh)
+            if isinstance(data, dict):
+                documented = _endpoint_entries(data)
+                matches = not requested or not documented or any(_entry_matches(value, requested) for value in documented)
                 schema = data.get("request") or data.get("request_schema") or {}
-                if schema.get("properties"):
-                    result.update(request_schema=schema, required=schema.get("required", []), source="schema",
-                                  matched=bool(not operation or endpoints or result["matched"]), schema_operation=operation)
-                    break
-            else:
-                params = data.get("params") or {}
-                result["params"] = params
-                category = str(data.get("category") or "").lower()
-                block = params.get(category) or next((v for v in params.values() if isinstance(v, dict) and v.get("properties")), {})
-                props = dict(block.get("properties") or {})
-                override = (block.get("endpoint_params") or {}).get(operation, {})
-                props.update(override.get("properties") or {})
-                if props:
-                    required = [key for key, prop in props.items() if prop.get("required")]
-                    default_operation = {"text": "chat", "image": "image-generation", "video": "video-generation", "audio": "audio-speech"}.get(category)
-                    matched = bool(not operation or override or operation == default_operation or result["matched"])
-                    result.update(request_schema=normalize_parameter_schema({"type": "object", "properties": props, "required": required}), required=required, source="detail",
-                                  matched=matched, schema_operation=operation if matched else None)
+                if matches and schema.get("properties") and (not variant or selected is not None):
+                    result.update(request_schema=copy.deepcopy(schema), required=schema.get("required", []),
+                                  source="schema", matched=True, schema_operation=endpoint_key)
+                elif documented and not matches:
+                    result["source"] = "schema-no-operation-match"
+            if not result["request_schema"].get("properties") and result["source"] not in {"docs-no-operation-match", "schema-no-operation-match"}:
+                detail = await self._metadata("/pricing/detail", query={"model_name": model}, locale=locale, refresh=refresh)
+                if isinstance(detail, dict):
+                    params = detail.get("params") or {}
+                    result["params"] = params
+                    category = canonical_family(detail.get("category"))
+                    block = params.get(category) or next((value for value in params.values() if isinstance(value, dict) and value.get("properties")), {})
+                    overrides = block.get("endpoint_params") or {}
+                    alias = next((key for key, value in _ENDPOINT_ALIASES.items() if value == operation), None)
+                    override = overrides.get(endpoint_key) or overrides.get(operation) or overrides.get(alias) or {}
+                    props = dict(block.get("properties") or {})
+                    props.update(override.get("properties") or {})
+                    expected = {"text": "chat", "image": "image-generation", "video": "video-generation", "audio": "audio-speech"}.get(category)
+                    matched = not operation or bool(override) or operation == expected or result["matched"]
+                    if props and matched and not variant:
+                        normalized = normalize_parameter_schema({"type": "object", "properties": props})
+                        result.update(request_schema=normalized, required=normalized.get("required", []), source="detail",
+                                      matched=True, schema_operation=operation)
+        schema, repairs = _schema_corrections(model, operation, result["request_schema"])
+        result.update(request_schema=schema, required=list(schema.get("required", result["required"])), corrections=repairs)
+        if result["required"] and "required" not in schema:
+            schema["required"] = list(result["required"])
+        is_video = requested and requested["family"] == "video" or canonical_family(docs.get("category")) == "video"
+        if is_video:
+            result["video"] = _video_metadata(model, schema, relevant_variants, locale)
+            if variant in result["video"]["variants"]:
+                active = result["video"]["variants"][variant]
+                result.update(request_schema=copy.deepcopy(active["request_schema"]), required=list(active["required"]),
+                              selected_variant=variant, matched=True)
         result["declared"] = bool(result["request_schema"].get("properties"))
+        result["fallback"] = "basic-and-advanced-json" if not result["declared"] or not result["matched"] else None
+        if result["fallback"]:
+            result["form_schema"] = basic_form_schema(operation)
         self._cache[cache_key] = time.monotonic(), copy.deepcopy(result)
         return result
