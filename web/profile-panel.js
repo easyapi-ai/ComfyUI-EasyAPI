@@ -46,7 +46,6 @@ export class ProfileManager {
     this.name = element("input", { autocomplete: "off" });
     this.base = element("input", { type: "url", value: OFFICIAL_GATEWAY, autocomplete: "url" });
     this.key = element("input", { type: "password", value: "", autocomplete: "new-password" });
-    this.key.placeholder = t("留空保留已保存的密钥");
     this.makeDefault = element("input", { type: "checkbox" });
     this.summary = element("div", { className: "ea-credential-summary" });
     this.saveButton = this.action("保存连接", () => this.save(), true);
@@ -54,20 +53,21 @@ export class ProfileManager {
     this.defaultButton = this.action("setDefaultConnection", () => this.setDefault());
     this.testButton = this.action("testConnection", () => this.test());
     this.testHint = element("small", { className: "ea-caption" });
-    this.authorizeButton = this.action("authorizeOfficial", () => this.startAuthorization(), true);
+    this.authorizeButton = this.action("authorizeOfficial", () => this.startAuthorization());
     this.authNotice = this.label("p", "authorizationNotice", { className: "ea-caption" });
     this.authStatus = element("div", { className: "ea-status", role: "status" });
     this.authLink = this.label("a", "openAuthorization", { target: "_blank", rel: "noopener noreferrer", hidden: true });
     this.cancelAuthorization = this.action("cancelAuthorization", () => this.cancelAuth());
     this.cancelAuthorization.hidden = true;
-    this.manual = element("details", { className: "ea-advanced" }, this.label("summary", "manualKey"), this.field("API 密钥", this.key));
+    const authorization = element("details", { className: "ea-advanced" }, this.label("summary", "authMethod.official"),
+      element("div", { className: "ea-manager-view ea-authorization" }, this.authNotice,
+        element("div", { className: "ea-row" }, this.authorizeButton, this.authLink, this.cancelAuthorization), this.authStatus));
     this.form = element("form", { className: "ea-profile-editor" });
     this.form.addEventListener("submit", (event) => { event.preventDefault(); this.save(); });
     this.form.append(this.summary, this.field("显示名称", this.name), this.field("连接别名", this.id), this.field("服务地址", this.base),
-      this.authNotice, element("div", { className: "ea-row" }, this.authorizeButton, this.authLink, this.cancelAuthorization), this.authStatus,
-      this.manual, element("label", { className: "ea-checkbox" }, this.makeDefault, this.label("span", "makeDefault")),
+      this.field("API 密钥", this.key), element("label", { className: "ea-checkbox" }, this.makeDefault, this.label("span", "makeDefault")),
       element("div", { className: "ea-row" }, this.saveButton, this.defaultButton, this.deleteButton),
-      element("div", { className: "ea-connection-test" }, this.testButton, this.testHint));
+      element("div", { className: "ea-connection-test" }, this.testButton, this.testHint), authorization);
     this.connectionView = element("div", { className: "ea-manager-view" }, this.label("p", "managerDescription", { className: "ea-caption" }), this.profileList,
       this.action("newConnection", () => this.newProfile()), this.notice, this.form);
     this.presetPanel = createPresets?.();
@@ -139,7 +139,7 @@ export class ProfileManager {
     this.selectedId = null; this.id.readOnly = false;
     let alias = "easyapi", count = 2; while (this.profiles.some((profile) => profile.id === alias)) alias = "easyapi-" + count++;
     this.id.value = alias; this.name.value = "EasyAPI"; this.base.value = OFFICIAL_GATEWAY; this.key.value = "";
-    this.makeDefault.checked = false; this.dirty = true; this.editorTouched = false; this.manual.open = !window.isSecureContext;
+    this.makeDefault.checked = false; this.dirty = true; this.editorTouched = false;
     this.summary.textContent = t("newConnection"); this.notice.textContent = ""; this.renderProfiles(); this.updateDisabled();
   }
   select(profileId) {
@@ -147,7 +147,7 @@ export class ProfileManager {
     const profile = this.profiles.find((value) => value.id === profileId); if (!profile) { this.requestedId = profileId; return; }
     this.selectedId = profile.id; this.id.value = profile.id; this.id.readOnly = true;
     this.name.value = profile.name; this.base.value = profile.base_url; this.key.value = "";
-    this.makeDefault.checked = profile.id === this.defaultId; this.dirty = false; this.manual.open = profile.auth_method === "manual";
+    this.makeDefault.checked = profile.id === this.defaultId; this.dirty = false;
     const expiry = profile.credential_expires_at ? new Date(profile.credential_expires_at * 1000).toLocaleDateString(hostLocale()) : "";
     this.summary.textContent = [credentialHint(profile), t("authMethod." + profile.auth_method), expiry ? t("credentialExpires", { date: expiry }) : ""].filter(Boolean).join(" · ");
     this.renderProfiles(); this.updateDisabled();
@@ -155,6 +155,7 @@ export class ProfileManager {
   updateDisabled() {
     const profile = this.selected(), readOnly = Boolean(profile?.read_only), pending = this.authorizing || this.flow?.status === "pending";
     this.name.readOnly = this.base.readOnly = this.key.readOnly = readOnly || pending;
+    this.key.placeholder = profile?.has_key ? t("留空保留已保存的密钥") : "";
     this.makeDefault.disabled = readOnly || pending;
     this.id.readOnly = Boolean(profile) || pending;
     this.saveButton.disabled = readOnly || pending; this.deleteButton.disabled = !profile || readOnly || pending;
@@ -170,7 +171,10 @@ export class ProfileManager {
   async save() {
     if (this.saveButton.disabled) return;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.id.value.trim()) || !this.base.value.trim()) throw new Error(t("invalidConnectionFields"));
-    if (!this.selected() && !this.key.value.trim()) { this.manual.open = true; throw new Error(t("authorizeOrEnterKey")); }
+    if (!this.selected() && !this.key.value.trim()) {
+      this.key.focus();
+      throw new Error(t("connectionKeyRequired"));
+    }
     const id = this.id.value.trim();
     this.saveButton.disabled = true;
     try {
@@ -256,7 +260,7 @@ export class ProfileManager {
   }
   translate() {
     for (const entry of this.labels) entry.node.textContent = t(entry.key);
-    this.key.placeholder = t("留空保留已保存的密钥"); this.renderProfiles(); this.updateDisabled();
+    this.renderProfiles(); this.updateDisabled();
     if (this.flow) this.authStatus.textContent = t(this.flow.status === "pending" ? "authorizationPending" : "authorization." + this.flow.status);
     this.presetPanel?.translate();
   }

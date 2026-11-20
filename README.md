@@ -21,8 +21,8 @@
 
 从左侧 **EasyAPI** 或顶部扩展菜单打开连接管理。只有一个连接时，节点会直接使用它；有多个连接时，新节点会使用设定的默认连接，也可以通过节点右键菜单指定连接。新连接默认使用官方网关 `https://token.easyapi.com`。
 
-- **官网授权**。跳转到 EasyAPI 官网同意授权。ComfyUI 后端为当前实例领取 30 天的专用令牌。重新授权可继续使用，吊销在 EasyAPI 控制台完成。内网远程部署请通过 HTTPS 打开 ComfyUI。
 - **手动 API Key**。适合已有密钥或自定义网关，可在 ComfyUI 的同源 HTTP 或 HTTPS 页面保存。已保存的密钥只显示尾号，编辑时留空会保留原值。
+- **官网授权**。展开连接表单下方的「官网授权」后跳转到 EasyAPI 官网。ComfyUI 后端为当前实例领取 30 天的专用令牌。重新授权可继续使用，吊销在 EasyAPI 控制台完成。官网授权需要可信 HTTPS 或 localhost。
 - **部署密钥**。在 ComfyUI 服务进程设置 `EASYAPI_API_KEY_FILE` 指向挂载的 Secret 文件，或设置 `EASYAPI_API_KEY`。可通过 `EASYAPI_BASE_URL` 指定网关。侧栏显示只读连接 `easyapi-env`。
 
 「测试连接」只读取权限模型列表。工作流只保存连接别名。官网授权的专用令牌仅由 ComfyUI 后端保存和使用。
