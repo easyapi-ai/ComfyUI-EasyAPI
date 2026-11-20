@@ -235,6 +235,38 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cached["request_schema"]["properties"])
         self.assertEqual(len(self.calls), before)
 
+    async def test_seedance_25_duration_accepts_smart_or_bounded_seconds_in_all_video_scenarios(self):
+        model = "seedance-2.5"
+        duration = {"type": "integer", "description": "4–30 seconds or -1 (smart duration)."}
+        schema = {"type": "object", "properties": {"prompt": {"type": "string"}, "duration": duration},
+                  "required": ["prompt"]}
+        scenarios = ("text-to-video", "image-to-video", "reference-to-video")
+        entry = endpoint("api-video", "/v1/videos", schema=schema, variants=[
+            endpoint(name, "/v1/videos", schema=schema) for name in scenarios
+        ])
+        self.docs[model] = {"category": "video", "endpoints": [entry]}
+        for variant in (None, *scenarios):
+            with self.subTest(variant=variant):
+                result = await self.client.model_schema(model, "video-generation", variant=variant)
+                request_schema = result["request_schema"]
+                field = request_schema["properties"]["duration"]
+                self.assertEqual(field["description"], duration["description"])
+                self.assertNotIn("default", field)
+                self.assertIn("seedance-2.5-smart-duration", result["corrections"])
+                self.assertEqual(result["docs"]["endpoints"][0]["request_schema"]["properties"]["duration"], duration)
+                validator = Draft202012Validator(request_schema)
+                self.assertTrue(validator.is_valid({"prompt": "A cat"}))
+                for seconds in (-1, 4, 19, 30):
+                    self.assertTrue(validator.is_valid({"prompt": "A cat", "duration": seconds}), seconds)
+                for seconds in (-2, 0, 1, 2, 3, 31, 4.5):
+                    self.assertFalse(validator.is_valid({"prompt": "A cat", "duration": seconds}), seconds)
+
+        precise_duration = {**duration, "const": -1}
+        entry["request_schema"] = {**schema, "properties": {**schema["properties"], "duration": precise_duration}}
+        precise = await self.client.model_schema(model, "video-generation", refresh=True)
+        self.assertEqual(precise["request_schema"]["properties"]["duration"], precise_duration)
+        self.assertNotIn("seedance-2.5-smart-duration", precise["corrections"])
+
     async def test_evidenced_schema_repairs_are_limited_and_preserve_video_alias_metadata(self):
         self.schemas["seedance-2.0-mini"] = {"category": "video", "request": {"type": "object", "properties": {
             "duration": {"type": "integer", "minimum": 4, "maximum": 15}, "service_tier": {"type": "string", "enum": ["default", "flex"]}}}}

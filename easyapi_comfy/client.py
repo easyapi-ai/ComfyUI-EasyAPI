@@ -217,7 +217,7 @@ def _capability_operations(row):
 def _schema_corrections(model, operation, schema):
     """Small, evidenced gateway metadata repairs, never inferred by vendor family.
 
-    Evidence: anonymous token.easyapi.com/pricing/schema samples, 2026-11-18.
+    Evidence: anonymous EasyAPI pricing metadata samples, 2026-11-18 and 2026-11-20.
     Fix only the affected exact model/field shapes; retain upstream metadata in
     docs, and expose every applied compatibility repair to the UI.
     """
@@ -234,6 +234,15 @@ def _schema_corrections(model, operation, schema):
         if isinstance(tier, dict) and "flex" in tier.get("enum", []):
             tier["enum"] = [value for value in tier["enum"] if value != "flex"]
             repairs.append("seedance-mini-no-flex")
+    if model == "seedance-2.5" and operation == "video-generation":
+        duration = props.get("duration")
+        # This endpoint documents the two allowed forms in the description only.
+        if isinstance(duration, dict) and duration.keys() == {"type", "description"} and duration["type"] == "integer":
+            props["duration"] = {
+                **duration,
+                "anyOf": [{"const": -1}, {"type": "integer", "minimum": 4, "maximum": 30}],
+            }
+            repairs.append("seedance-2.5-smart-duration")
     if model == "qwen-audio-3.0-tts-plus":
         hints = props.get("language_hints")
         if isinstance(hints, dict) and hints.get("type") == "array" and isinstance(hints.get("enum"), list):

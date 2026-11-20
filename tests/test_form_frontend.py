@@ -53,6 +53,9 @@ const videoFields = { type: 'object', properties: {
   seed: { type: 'integer', minimum: 0, maximum: 2147483647 },
   generate_audio: { type: 'boolean', default: true }, watermark: { type: 'boolean', default: false },
 } };
+const seedanceFields = { type: 'object', properties: {
+  duration: { type: 'integer', anyOf: [{ const: -1 }, { type: 'integer', minimum: 4, maximum: 30 }] },
+} };
 const speechFields = { type: 'object', required: ['voice'], properties: {
   voice: { type: 'string', enum: ['longanlingxin', 'longanlufeng'], default: 'longanlingxin' },
   response_format: { type: 'string', enum: ['mp3', 'wav'] },
@@ -73,7 +76,10 @@ const api = { async fetchApi(address, options = {}) {
       data = await new Promise((resolve) => { releaseNodeModels = resolve; });
     } else data = { models: fixtures.models, authority: 'api_key' };
   }
-  else if (url.pathname === '/easyapi/schema') data = { request_schema: schemasByOperation[url.searchParams.get('operation')] || fields, matched: true, declared: true };
+  else if (url.pathname === '/easyapi/schema') {
+    const schema = url.searchParams.get('model') === 'seedance-2.5' ? seedanceFields : schemasByOperation[url.searchParams.get('operation')] || fields;
+    data = { request_schema: schema, matched: true, declared: true };
+  }
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
   else if (url.pathname === '/easyapi/prompt/models') data = { models: [{ id: 'prompt-text' }] };
   else if (url.pathname === '/easyapi/prompt/transform') data = { text: 'improved prompt' };
@@ -312,6 +318,32 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   assert.ok(video.videoError.textContent.includes('Connections have been preserved'));
   assert.ok(video.videoCSS.includes('outline:')); assert.ok(!video.videoCSS.includes('display:none'));
   assert.equal(videoNode.inputs[referenceIndex].link, 8);
+  const seedanceNode = makeNode('EasyAPIVideo', { values: { profile_id: 'p2', model: 'seedance-2.5', operation: 'video-generation', prompt: '', params_json: '{}', mode: 'auto' } });
+  const seedance = new h.NodePanel(seedanceNode); body.append(seedance.root); await tick();
+  const readDuration = () => JSON.parse(get(seedanceNode, 'params_json')).duration;
+  const smartDuration = findInput(seedance, ['duration']);
+  const [minus, track, plus] = smartDuration.parentElement.parentElement.children;
+  assert.equal(smartDuration.type, 'range');
+  assert.equal(track.lastElementChild.textContent, '—');
+  assert.equal(readDuration(), undefined);
+  smartDuration.fire('keydown', { key: 'Home' });
+  assert.equal(readDuration(), -1);
+  assert.equal(smartDuration.getAttribute('aria-valuetext'), 'Smart (−1)');
+  assert.equal(minus.disabled, true);
+  plus.fire('click'); assert.equal(readDuration(), 4);
+  minus.fire('click'); assert.equal(readDuration(), -1);
+  smartDuration.value = smartDuration.max; smartDuration.fire('change');
+  assert.equal(readDuration(), 30); assert.equal(plus.disabled, true);
+  smartDuration.closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  assert.equal(readDuration(), undefined); assert.equal(track.lastElementChild.textContent, '—');
+  seedance.commitParams({ duration: 2 }); seedance.renderForm();
+  const oldDuration = findInput(seedance, ['duration']);
+  assert.equal(oldDuration.type, 'number'); assert.equal(readDuration(), 2);
+  oldDuration.value = '3'; oldDuration.fire('change');
+  assert.ok(oldDuration.validationMessage); assert.equal(readDuration(), 2);
+  oldDuration.value = '-1'; oldDuration.fire('change');
+  assert.equal(findInput(seedance, ['duration']).type, 'range'); assert.equal(readDuration(), -1);
+  seedance.dispose();
   const speechNode = makeNode('EasyAPISpeech', { values: { profile_id: 'p2', model: 'saved-model', operation: 'audio-speech', prompt: '', params_json: '{}' } });
   const speech = new h.NodePanel(speechNode); body.append(speech.root); await tick();
   const voice = findInput(speech, ['voice']);

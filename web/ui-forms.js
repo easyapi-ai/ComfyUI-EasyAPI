@@ -42,6 +42,17 @@ function stepper(kind, input, label, t, minimum, maximum, getValue, middle = inp
   return { element, choose, sync };
 }
 
+function durationBounds(definition) {
+  const { minimum, maximum, anyOf } = definition;
+  if (!anyOf) return { minimum, maximum, smart: false };
+  if (minimum !== undefined || maximum !== undefined || !Array.isArray(anyOf) || anyOf.length !== 2) return null;
+  const smart = anyOf.find((branch) => branch?.const === -1 && Object.keys(branch).length === 1);
+  const range = anyOf.find((branch) => branch?.type === "integer" && Object.keys(branch).every((key) =>
+    ["type", "minimum", "maximum", "title", "description", "default"].includes(key)));
+  if (!smart || !range || !(range.minimum >= 1)) return null;
+  return { minimum: range.minimum, maximum: range.maximum, smart: true };
+}
+
 export function makeFieldHelp(hint, label) {
   const tip = make("span", { className: "ea-field-help", id: "easyapi-help-" + ++nextFieldId, textContent: hint });
   tip.setAttribute("role", "tooltip");
@@ -152,16 +163,26 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         (!Array.isArray(options) || (options.length === 2 && options.includes(true) && options.includes(false)));
       const canSwitch = (value) => supportsSwitch && (value === undefined || typeof value === "boolean");
       const isSwitch = canSwitch(current);
-      const plainInteger = type === "integer" && !hasChoices && !isJSON && definition.const === undefined &&
+      const simpleInteger = type === "integer" && !hasChoices && !definition.oneOf && !definition.additionalProperties && definition.const === undefined &&
         definition.exclusiveMinimum === undefined && definition.exclusiveMaximum === undefined &&
         (definition.multipleOf === undefined || definition.multipleOf === 1);
       const minimum = definition.minimum;
       const maximum = definition.maximum;
-      const withinBounds = (value) => value === undefined || (Number.isSafeInteger(value) && value >= minimum && value <= maximum);
-      const supportsDuration = plainInteger && ["duration", "seconds"].includes(key) &&
-        Number.isSafeInteger(minimum) && Number.isSafeInteger(maximum) && minimum < maximum && withinBounds(definition.default);
+      const bounds = simpleInteger && !definition.allOf && !definition.not && !definition.if && ["duration", "seconds"].includes(key)
+        ? durationBounds(definition) : null;
+      const durationMin = bounds?.minimum;
+      const durationMax = bounds?.maximum;
+      const hasSmartDuration = bounds?.smart === true;
+      const withinBounds = (value) => value === undefined || (hasSmartDuration && value === -1) ||
+        (Number.isSafeInteger(value) && value >= durationMin && value <= durationMax);
+      const supportsDuration = Number.isSafeInteger(durationMin) && Number.isSafeInteger(durationMax) &&
+        durationMin < durationMax && withinBounds(definition.default);
       const canSlide = (value) => supportsDuration && withinBounds(value);
       const isDuration = canSlide(current);
+      // Reserve the stop immediately before the fixed range for smart duration.
+      const firstDurationStop = hasSmartDuration ? durationMin - 1 : durationMin;
+      const durationAtStop = (stop) => hasSmartDuration && stop === firstDurationStop ? -1 : stop;
+      const durationStop = (value) => hasSmartDuration && value === -1 ? firstDurationStop : value;
       const inputValue = (value) => value === undefined ? defaultChoice : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
       const effectiveNumber = () => {
         const value = atPath(getValue(), path);
@@ -178,17 +199,28 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         }
         input = make("select", {}, ...choicesUI);
       } else if (isDuration) {
-        input = make("input", { type: "range", className: "ea-duration-input", min: String(minimum), max: String(maximum), step: "1" });
+        input = make("input", { type: "range", className: "ea-duration-input", min: String(firstDurationStop), max: String(durationMax), step: "1" });
         const output = make("output", { className: "ea-duration-value" });
         const track = make("div", { className: "ea-duration-track" }, input, output);
-        const steps = stepper("duration", input, label, t, minimum, maximum, effectiveNumber, track);
+        const steps = stepper("duration", input, label, t, firstDurationStop, durationMax, () => durationStop(effectiveNumber()), track);
         control = steps.element;
         const paint = (value) => {
-          const fraction = value === undefined ? 0 : (value - minimum) / (maximum - minimum);
+          const fraction = value === undefined ? 0 : (durationStop(value) - firstDurationStop) / (durationMax - firstDurationStop);
           control.style.setProperty("--ea-duration-fill", `${fraction * 100}%`);
-          output.textContent = value === undefined ? "—" : String(value);
+          output.textContent = value === undefined ? "—" : hasSmartDuration && value === -1 ? t("smartDuration") : String(value);
+          if (hasSmartDuration) input.setAttribute("aria-valuetext", value === undefined ? t("durationUnset") : output.textContent);
         };
-        input.addEventListener("input", () => paint(Number(input.value)));
+        input.addEventListener("input", () => paint(durationAtStop(Number(input.value))));
+        if (hasSmartDuration) {
+          // The native range emits no change if the first stop is already under its thumb.
+          input.addEventListener("click", () => { if (effectiveNumber() === undefined) steps.choose(Number(input.value)); });
+          input.addEventListener("keydown", (event) => {
+            if (event.key === "Home" && effectiveNumber() === undefined) {
+              event.preventDefault();
+              steps.choose(firstDurationStop);
+            }
+          });
+        }
         syncControl = () => { paint(effectiveNumber()); steps.sync(); };
       } else if (["integer", "number"].includes(type)) {
         input = make("input", { type: "number", placeholder: definition.default !== undefined ? String(definition.default) : t("optionalValue"), step: type === "integer" ? "1" : "any" });
@@ -196,7 +228,7 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         if (maximum !== undefined) input.max = maximum;
         const seedMinimum = minimum ?? 0;
         const seedMaximum = maximum ?? Math.max(seedMinimum, 2147483647);
-        if (key === "seed" && plainInteger && Number.isSafeInteger(seedMinimum) && Number.isSafeInteger(seedMaximum) && seedMinimum <= seedMaximum) {
+        if (key === "seed" && simpleInteger && !isJSON && Number.isSafeInteger(seedMinimum) && Number.isSafeInteger(seedMaximum) && seedMinimum <= seedMaximum) {
           input.className = "ea-seed-value";
           const steps = stepper("seed", input, label, t, seedMinimum, maximum ?? Number.MAX_SAFE_INTEGER, effectiveNumber);
           const shuffle = stepButton("⤨", t("shuffleSeed"), "ea-shuffle");
@@ -225,7 +257,7 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
           input.checked = effective === true;
           input.dataset.unset = String(effective === undefined);
           input.title = effective === undefined ? t("optionalValue") : "";
-        } else input.value = isDuration ? String(effectiveNumber() ?? minimum) : inputValue(value);
+        } else input.value = isDuration ? String(durationStop(effectiveNumber()) ?? firstDurationStop) : inputValue(value);
         syncControl();
       };
       refreshInput();
@@ -261,11 +293,12 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
               input.value = inputValue(atPath(getValue(), path));
             } else commit(path, undefined, true);
           }
-          else if (hasChoices || isJSON) commit(path, JSON.parse(next));
+          else if (isDuration) commit(path, durationAtStop(Number(next)));
+          else if (hasChoices || (isJSON && !supportsDuration)) commit(path, JSON.parse(next));
           else if (["integer", "number"].includes(type)) {
             next = Number(next);
             if (!Number.isFinite(next) || (type === "integer" && !Number.isInteger(next)) ||
-              next < definition.minimum || next > definition.maximum) throw new Error(input.validationMessage || t("invalidNumber"));
+              (supportsDuration ? !withinBounds(next) : next < minimum || next > maximum)) throw new Error(input.validationMessage || t("invalidNumber"));
             commit(path, next);
           } else commit(path, next);
           if (upgradeFallback()) return;
