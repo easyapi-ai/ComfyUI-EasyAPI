@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import codecs
+import inspect
 import json
 import mimetypes
 import os
@@ -17,6 +19,8 @@ import aiohttp
 
 from .profiles import normalize_base_url
 from .protocols import PROTOCOLS, basic_form_schema, get_protocol, validate_path
+
+MODEL_CATALOG_TTL = 300
 
 
 @dataclass
@@ -328,6 +332,7 @@ class EasyAPIClient:
         self.max_response_bytes = 64 * 1024 * 1024
         self._sessions = {}
         self._cache = {}
+        self._catalog_loads = {}
         self._invalidated = False
 
     def invalidate(self):
@@ -351,6 +356,12 @@ class EasyAPIClient:
         return current
 
     async def close(self):
+        loop = asyncio.get_running_loop()
+        pending = [task for task in self._catalog_loads.values() if task.get_loop() is loop]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         for session in self._sessions.values():
             if not session.closed:
                 await session.close()
@@ -364,7 +375,7 @@ class EasyAPIClient:
         return credential_headers(self.api_key, self.client_id)
 
     async def request(self, method, path, *, body=None, files=None, query=None, stream=False,
-                      locale=None, authenticated=True) -> APIResponse:
+                      locale=None, authenticated=True, on_event=None) -> APIResponse:
         method = str(method).upper()
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise ValueError("Unsupported HTTP method")
@@ -396,7 +407,7 @@ class EasyAPIClient:
                     content_type = response.headers.get("Content-Type", "").split(";", 1)[0].lower()
                     result = APIResponse(status=response.status, headers=dict(response.headers), content_type=content_type)
                     if content_type == "text/event-stream":
-                        result.data = await self._read_sse(response)
+                        result.data = await self._read_sse(response, on_event=on_event)
                     else:
                         chunks, size = [], 0
                         async for chunk in response.content.iter_chunked(1024 * 1024):
@@ -425,29 +436,40 @@ class EasyAPIClient:
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 raise EasyAPIError(f"Gateway connection failed ({type(exc).__name__}); a submitted task may still exist", retryable=True) from exc
 
-    async def _read_sse(self, response):
+    async def _read_sse(self, response, on_event=None):
         events, data_lines, event_name, event_id = [], [], "message", None
-        byte_count = 0
-        async for raw in response.content:
-            byte_count += len(raw)
-            if byte_count > 128 * 1024 * 1024:
-                raise EasyAPIError("Event stream exceeded the response limit")
-            line = raw.decode("utf-8").rstrip("\r\n")
+        byte_count, buffer = 0, ""
+        decoder = codecs.getincrementaldecoder("utf-8")()
+
+        async def dispatch():
+            nonlocal data_lines, event_name
+            if not data_lines:
+                return
+            joined = "\n".join(data_lines)
+            data_lines = []
+            if joined != "[DONE]":
+                try:
+                    value = json.loads(joined)
+                except ValueError:
+                    value = joined
+                value = redact(value, self.api_key)
+                if event_name == "error" or (isinstance(value, dict) and (value.get("error") or value.get("type") == "error")):
+                    raise EasyAPIError("Gateway stream failed: " + str(value)[:1000])
+                event = {"event": event_name, "id": event_id, "data": value}
+                events.append(event)
+                if on_event:
+                    pending = on_event(event)
+                    if inspect.isawaitable(pending):
+                        await pending
+            event_name = "message"
+
+        async def read_line(line):
+            nonlocal event_name, event_id
             if not line:
-                if data_lines:
-                    joined = "\n".join(data_lines)
-                    if joined != "[DONE]":
-                        try:
-                            value = json.loads(joined)
-                        except ValueError:
-                            value = joined
-                        if event_name == "error" or (isinstance(value, dict) and (value.get("error") or value.get("type") == "error")):
-                            raise EasyAPIError("Gateway stream failed: " + str(redact(value, self.api_key))[:1000])
-                        events.append({"event": event_name, "id": event_id, "data": value})
-                    data_lines, event_name = [], "message"
-                continue
+                await dispatch()
+                return
             if line.startswith(":"):
-                continue
+                return
             key, _, value = line.partition(":")
             if value.startswith(" "):
                 value = value[1:]
@@ -457,15 +479,19 @@ class EasyAPIClient:
                 event_name = value
             elif key == "id":
                 event_id = value
-        if data_lines and "\n".join(data_lines) != "[DONE]":
-            joined = "\n".join(data_lines)
-            try:
-                joined = json.loads(joined)
-            except ValueError:
-                pass
-            if event_name == "error" or (isinstance(joined, dict) and (joined.get("error") or joined.get("type") == "error")):
-                raise EasyAPIError("Gateway stream failed: " + str(redact(joined, self.api_key))[:1000])
-            events.append({"event": event_name, "id": event_id, "data": joined})
+
+        async for raw in response.content.iter_chunked(65536):
+            byte_count += len(raw)
+            if byte_count > 128 * 1024 * 1024:
+                raise EasyAPIError("Event stream exceeded the response limit")
+            buffer += decoder.decode(raw)
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                await read_line(line.rstrip("\r"))
+        buffer += decoder.decode(b"", final=True)
+        if buffer:
+            await read_line(buffer.rstrip("\r"))
+        await dispatch()
         return {"events": events}
 
     async def upload_media(self, path, *, kind=None, role=None, mime=None) -> dict:
@@ -524,9 +550,16 @@ class EasyAPIClient:
     async def _metadata(self, path, *, query=None, locale=None, refresh=False):
         locale = normalize_locale(locale)
         cache_key = ("metadata", path, tuple(sorted((query or {}).items())), locale)
+        pending = self._pending_catalog_load(cache_key, False)
+        if pending:
+            return copy.deepcopy(await asyncio.shield(pending))
         cached = self._cache.get(cache_key)
         if not refresh and cached and time.monotonic() - cached[0] < 300:
             return copy.deepcopy(cached[1])
+        value = await self._share_catalog_load(cache_key, False, self._fetch_metadata(cache_key, path, query, locale))
+        return copy.deepcopy(value)
+
+    async def _fetch_metadata(self, cache_key, path, query, locale):
         try:
             response = await self.request("GET", path, query=query, locale=locale, authenticated=False)
             payload = response.data or {}
@@ -535,7 +568,8 @@ class EasyAPIClient:
             if exc.status not in {0, 400, 401, 403, 404, 429, 500, 502, 503, 504}:
                 raise
             value = None
-        self._cache[cache_key] = time.monotonic(), copy.deepcopy(value)
+        self._assert_current()
+        self._cache[cache_key] = time.monotonic(), value
         return value
 
     async def _public_catalog(self, *, locale, refresh=False):
@@ -562,38 +596,93 @@ class EasyAPIClient:
         if family and want is None:
             raise ValueError("Unknown node family")
         cache_key = ("models", want, operation, locale)
+        pending = self._pending_catalog_load(cache_key, refresh)
+        if pending:
+            return copy.deepcopy(await asyncio.shield(pending))
         cached = self._cache.get(cache_key)
-        if not refresh and cached and time.monotonic() - cached[0] < 300:
+        if not refresh and self._catalog_fresh(cached):
             return copy.deepcopy(cached[1])
         if not self.api_key:
             raise EasyAPIError("Configure an API key before listing permitted models", status=401)
+        rows = await self._share_catalog_load(cache_key, refresh, self._discover_rows(want, operation, locale, refresh))
+        return copy.deepcopy(rows)
+
+    def _pending_catalog_load(self, key, refresh):
+        loop = asyncio.get_running_loop()
+        return self._catalog_loads.get((loop, key, True)) or (
+            None if refresh else self._catalog_loads.get((loop, key, False)))
+
+    async def _share_catalog_load(self, key, refresh, load):
+        task = asyncio.create_task(load)
+        key = (task.get_loop(), key, refresh)
+        self._catalog_loads[key] = task
+
+        def completed(result):
+            self._catalog_loads.pop(key, None)
+            # A disconnected browser waiter should neither cancel discovery nor leave an unhandled error.
+            if not result.cancelled():
+                result.exception()
+
+        task.add_done_callback(completed)
+        return await asyncio.shield(task)
+
+    @staticmethod
+    def _catalog_fresh(cached):
+        return cached is not None and time.monotonic() - cached[0] < MODEL_CATALOG_TTL
+
+    def model_catalog_cache_seconds(self, locale):
+        cached = self._cache.get(("allowed-models", normalize_locale(locale)))
+        return max(0, int(cached[0] + MODEL_CATALOG_TTL - time.monotonic())) if cached else 0
+
+    def _discard_model_catalog(self, locale=None):
+        for key in tuple(self._cache):
+            if isinstance(key, tuple) and key[0] in {"models", "allowed-models"} and (locale is None or key[-1] == locale):
+                self._cache.pop(key, None)
+
+    async def _allowed_models(self, locale, refresh):
         scope_key = ("allowed-models", locale)
+        pending = self._pending_catalog_load(scope_key, False)
+        if pending:
+            return await asyncio.shield(pending)
         scoped = self._cache.get(scope_key)
-        if not refresh and scoped and time.monotonic() - scoped[0] < 300:
-            allowed = copy.deepcopy(scoped[1])
-        else:
-            # Authentication failures must propagate. In particular an empty
-            # key catalog never falls back to the public pricing directory.
-            try:
-                response = await self.request("GET", "/v1/models", locale=locale)
-            except EasyAPIError as exc:
-                if exc.status in {401, 403}:
-                    # A rejected refresh invalidates every previously cached
-                    # scope/filter, not just the currently visible operation.
-                    self._cache = {key: value for key, value in self._cache.items()
-                                   if not isinstance(key, tuple) or key[0] not in {"models", "allowed-models"}}
-                raise
-            payload = response.data or {}
-            allowed = payload.get("data", []) if isinstance(payload, dict) else None
-            if not isinstance(allowed, list):
-                raise EasyAPIError("Model catalog is not a list")
-            allowed = [dict(item) if isinstance(item, dict) else {"id": item}
-                       for item in allowed if isinstance(item, (dict, str))]
-            allowed = [item for item in allowed if isinstance(item.get("id"), str) and item["id"]]
-            self._cache[scope_key] = time.monotonic(), copy.deepcopy(allowed)
-        if not allowed:
-            self._cache[cache_key] = time.monotonic(), []
-            return []
+        if not refresh and self._catalog_fresh(scoped):
+            return scoped
+        return await self._share_catalog_load(scope_key, False, self._fetch_allowed_models(locale))
+
+    async def _fetch_allowed_models(self, locale):
+        # Public metadata may enrich the authenticated catalogue. It cannot supply permission.
+        try:
+            response = await self.request("GET", "/v1/models", locale=locale)
+        except EasyAPIError as exc:
+            if exc.status in {401, 403}:
+                self._discard_model_catalog()
+            raise
+        self._assert_current()
+        payload = response.data or {}
+        allowed = payload.get("data", []) if isinstance(payload, dict) else None
+        if not isinstance(allowed, list):
+            raise EasyAPIError("Model catalog is not a list")
+        allowed = [dict(item) if isinstance(item, dict) else {"id": item}
+                   for item in allowed if isinstance(item, (dict, str))]
+        allowed = [item for item in allowed if isinstance(item.get("id"), str) and item["id"]]
+        self._discard_model_catalog(locale)
+        scope = time.monotonic(), allowed
+        self._cache[("allowed-models", locale)] = scope
+        return scope
+
+    async def _discover_rows(self, want, operation, locale, refresh):
+        scope_key = ("allowed-models", locale)
+        while True:
+            scope = await self._allowed_models(locale, refresh)
+            rows = await self._classify_models(scope[1], want, operation, locale, refresh) if scope[1] else []
+            self._assert_current()
+            if self._cache.get(scope_key) is scope:
+                self._cache[("models", want, operation, locale)] = scope[0], rows
+                return rows
+            # A concurrent refresh replaced the permission set while metadata was loading.
+            refresh = False
+
+    async def _classify_models(self, allowed, want, operation, locale, refresh):
         public = await self._public_catalog(locale=locale, refresh=refresh)
         semaphore = asyncio.Semaphore(6)
 
@@ -635,7 +724,8 @@ class EasyAPIClient:
             if operation and authority and operation not in operations:
                 return None
             enriched = copy.deepcopy(row)
-            for field in ("name", "description", "architecture", "capabilities", "params", "endpoints"):
+            for field in ("name", "description", "architecture", "capabilities", "params", "endpoints",
+                          "input_modalities", "inputModalities", "tags", "feature_tags"):
                 if not enriched.get(field) and extra.get(field) is not None:
                     enriched[field] = copy.deepcopy(extra[field])
             enriched.update(id=identifier, display_name=row.get("name") or extra.get("name") or identifier,
@@ -648,9 +738,7 @@ class EasyAPIClient:
                 enriched["operation_supported"] = True
             return enriched
 
-        rows = [item for item in await asyncio.gather(*(enrich(row) for row in allowed)) if item is not None]
-        self._cache[cache_key] = time.monotonic(), copy.deepcopy(rows)
-        return rows
+        return [item for item in await asyncio.gather(*(enrich(row) for row in allowed)) if item is not None]
 
     async def model_schema(self, model, operation=None, *, locale=None, variant=None, refresh=False) -> dict:
         self._assert_current()

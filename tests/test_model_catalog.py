@@ -1,9 +1,12 @@
 """Permission-aware discovery and metadata forms, using loopback-only gateways."""
+import asyncio
 import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -93,6 +96,71 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unknown["capability_status"], "unknown")
         self.assertIsNone(unknown["operation_supported"])
         self.assertTrue(all(auth is None for path, _, _, auth in self.calls if path.startswith("/pricing")))
+
+    async def test_concurrent_video_nodes_share_discovery_and_expire(self):
+        now = 1000
+        with patch("easyapi_comfy.client.time", SimpleNamespace(monotonic=lambda: now)):
+            rows = await asyncio.gather(*(self.client.discover_models("video", "video-generation") for _ in range(5)))
+            self.assertTrue(all(result == rows[0] for result in rows))
+            self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 1)
+            self.assertEqual(sum(path == "/pricing" for path, *_ in self.calls), 1)
+            now += 299
+            await self.client.discover_models("video", "video-generation")
+            self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 1)
+            now += 2
+            await self.client.discover_models("video", "video-generation")
+            self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 2)
+
+    async def test_families_share_permission_fetch_but_refresh_replaces_filtered_results(self):
+        video, chat = await asyncio.gather(self.client.discover_models("video", "video-generation"),
+                                           self.client.discover_models("text", "chat"))
+        self.assertIn("private-video", [model["id"] for model in video])
+        self.assertIn("text-multi", [model["id"] for model in chat])
+        self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 1)
+        self.assertEqual(sum(path == "/pricing/docs" for path, *_ in self.calls), len(self.allowed))
+        self.allowed = []
+        self.assertEqual(await self.client.discover_models("video", "video-generation", refresh=True), [])
+        self.assertEqual(await self.client.discover_models("text", "chat"), [])
+        self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 2)
+
+    async def test_stopped_model_request_does_not_cancel_other_viewers(self):
+        started, finish = asyncio.Event(), asyncio.Event()
+        request = self.client.request
+
+        async def wait_for_viewers(method, path, **options):
+            if path == "/v1/models":
+                started.set()
+                await finish.wait()
+            return await request(method, path, **options)
+
+        with patch.object(self.client, "request", side_effect=wait_for_viewers):
+            dismissed = asyncio.create_task(self.client.discover_models("video", "video-generation"))
+            await started.wait()
+            remaining = asyncio.create_task(self.client.discover_models("video", "video-generation"))
+            dismissed.cancel()
+            finish.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await dismissed
+            self.assertIn("private-video", [model["id"] for model in await remaining])
+        self.assertEqual(sum(path == "/v1/models" for path, *_ in self.calls), 1)
+
+    def test_browser_identity_tracks_connection_rotation_and_recreation(self):
+        with tempfile.TemporaryDirectory() as state:
+            profiles = ProfileStore(Path(state) / "profiles.json")
+            first_key = "fixture-api-key-same"
+            second_key = "different-key-same"
+            gateway = "https://gateway.example"
+            created = profiles.save("maker", gateway, first_key)
+            revision = created["model_catalog_revision"]
+            self.assertEqual(profiles.list_public()[0]["model_catalog_revision"], revision)
+            self.assertNotEqual(revision, profiles.revision("maker"))
+            self.assertNotIn(first_key, json.dumps(created))
+            rotated = profiles.save("maker", gateway, second_key)
+            self.assertEqual(rotated["key_hint"], created["key_hint"])
+            self.assertNotEqual(rotated["model_catalog_revision"], revision)
+            profiles.delete("maker")
+            recreated = profiles.save("maker", gateway, first_key)
+            self.assertNotEqual(recreated["model_catalog_revision"], revision)
 
     async def test_audio_operations_do_not_mix_channel_union_capabilities(self):
         for operation, expected in (("audio-speech", "speech"), ("audio-transcriptions", "asr"), ("realtime", "realtime")):

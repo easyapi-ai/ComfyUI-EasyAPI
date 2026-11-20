@@ -2,9 +2,11 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { t, textKey, hostLocale, localeQuery } from "./ui-i18n.js";
 import { parseParams, draftKey, selectProfile, persistDraft, readDraft, normalizedSchema, requiredDefaults, VIDEO_PORTS, videoPortState } from "./ui-state.js";
-import { renderSchemaForm } from "./ui-forms.js";
+import { makeFieldHelp, renderSchemaForm } from "./ui-forms.js";
 import { ProfileManager, EASYAPI_SIDEBAR_ID } from "./profile-panel.js";
 import { PresetPanel } from "./preset-panel.js";
+import { PromptEditor } from "./prompt-editor.js";
+import { createModelCatalog } from "./model-catalog.js";
 
 const sheet = document.createElement("link");
 sheet.rel = "stylesheet";
@@ -19,6 +21,16 @@ const portSheet = document.createElement("style");
 portSheet.dataset.easyapiPortVisibility = "true";
 document.head.append(portSheet);
 let nonce = "";
+// Nodes 2.0 forwards wheel events to the graph during capture, before the form can scroll.
+window.addEventListener("wheel", (event) => {
+  if (event.ctrlKey || event.metaKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+  const target = event.target;
+  const panel = target.closest?.(".ea-wan-content,.ea-prompt-popover,.ea-node-panel");
+  if (!panel) return;
+  if (panel.scrollHeight > panel.clientHeight ||
+    (target.tagName === "TEXTAREA" && target.scrollHeight > target.clientHeight)) event.stopPropagation();
+}, { capture: true, passive: true });
+
 const el = (tag, props = {}, ...children) => {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
@@ -42,7 +54,6 @@ const el = (tag, props = {}, ...children) => {
   return node;
 };
 const button = (text, action, primary = false) => el("button", { type: "button", class: primary ? "ea-primary" : "", onclick: action }, text);
-const field = (text, input) => el("label", {}, el("span", {}, text), input);
 const widget = (node, name) => node.widgets?.find((w) => w.name === name);
 const value = (node, name, fallback = "") => widget(node, name)?.value ?? fallback;
 function setValue(node, name, next) {
@@ -73,11 +84,191 @@ async function jsonRequest(path, options = {}) {
   }
   return response.json();
 }
+const modelCatalog = createModelCatalog(jsonRequest);
+let nodeProfilesSnapshot;
+function nodeProfiles() {
+  if (nodeProfilesSnapshot?.expires > Date.now()) return nodeProfilesSnapshot.request;
+  const snapshot = { expires: Infinity };
+  nodeProfilesSnapshot = snapshot;
+  snapshot.request = jsonRequest("/easyapi/profiles").then((data) => {
+    snapshot.expires = Date.now() + 15_000;
+    return data;
+  }).catch((error) => {
+    if (nodeProfilesSnapshot === snapshot) nodeProfilesSnapshot = undefined;
+    throw error;
+  });
+  return snapshot.request;
+}
 async function bootstrap() {
   // The backend may have restarted while the workflow and this module stayed open.
   nonce = (await jsonRequest("/easyapi/bootstrap", { method: "POST" })).management_nonce;
   if (!nonce) throw new Error(t("未获取连接管理凭据，请刷新页面"));
   return nonce;
+}
+async function promptModels(profileId, signal) {
+  const query = new URLSearchParams({ profile_id: profileId, locale: localeQuery() });
+  const result = await jsonRequest(`/easyapi/prompt/models?${query}`, { signal });
+  return listOf(result, "models");
+}
+async function transformPrompt(payload, signal, onEvent) {
+  const management = await bootstrap();
+  signal?.throwIfAborted();
+  const options = {
+    method: "POST", signal,
+    headers: { "Content-Type": "application/json", "X-EasyAPI-Management": management },
+    body: JSON.stringify({ ...payload, locale: localeQuery() }),
+  };
+  if (!payload.stream) return jsonRequest("/easyapi/prompt/transform", options);
+  const response = await api.fetchApi("/easyapi/prompt/transform", options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error?.message || body.error || `HTTP ${response.status}`);
+  }
+  if (!response.headers.get("content-type")?.includes("text/event-stream")) return response.json();
+  const { readEventStream } = await import("./wan-tuner-core.js");
+  return readEventStream(response, onEvent, signal);
+}
+async function resolvePromptMedia(payload, signal) {
+  const management = await bootstrap();
+  signal?.throwIfAborted();
+  return jsonRequest("/easyapi/prompt/media", {
+    method: "POST", signal,
+    headers: { "Content-Type": "application/json", "X-EasyAPI-Management": management },
+    body: JSON.stringify(payload),
+  });
+}
+
+function promptFileMedia(path, kind, role, id, defaultType = "input") {
+  if (typeof path !== "string" || !path) return null;
+  const marker = path.match(/\s+\[(input|output|temp)\]$/);
+  const clean = path.replace(/\s+\[(input|output|temp)\]$/, "").replaceAll("\\", "/");
+  const slash = clean.lastIndexOf("/");
+  const filename = clean.slice(slash + 1), subfolder = slash < 0 ? "" : clean.slice(0, slash);
+  const type = marker?.[1] || defaultType;
+  const query = new URLSearchParams({ filename, subfolder, type });
+  const url = new URL("/view?" + query, globalThis.location?.href || "http://localhost/").href;
+  return { id, kind, role, filename, subfolder, type, url, previewUrl: url, ready: true, name: clean };
+}
+
+function promptUrlMedia(url, kind, role, id) {
+  if (typeof url !== "string" || !url) return null;
+  try {
+    const page = new URL(globalThis.location?.href || "http://localhost/");
+    const absolute = new URL(url, page);
+    if (absolute.origin === page.origin && absolute.pathname === "/view" && absolute.searchParams.get("filename")) return promptFileMedia(
+      [absolute.searchParams.get("subfolder"), absolute.searchParams.get("filename")].filter(Boolean).join("/"),
+      kind, role, id, absolute.searchParams.get("type") || "input");
+    if (absolute.origin === page.origin && absolute.pathname.startsWith("/easyapi/files/")) {
+      const filename = decodeURIComponent(absolute.pathname.slice("/easyapi/files/".length));
+      return { id, kind, role, filename, subfolder: "", type: "easyapi", url: absolute.href,
+        previewUrl: absolute.href, ready: true, name: filename };
+    }
+    if (/^(https?:|data:)$/.test(absolute.protocol)) return { id, kind, role, url: absolute.href,
+      previewUrl: absolute.href, ready: true, name: id };
+  } catch { /* An unresolved source remains visible as pending media. */ }
+  return null;
+}
+
+function promptOutputMedia(node, kind, role, id) {
+  const output = node?.easyapiPromptOutput || app.nodeOutputs?.[node?.id] || {};
+  const records = [...(output.easyapi_media || []), ...(output.images || []), ...(output.audio || [])];
+  const entries = records.flatMap((record, index) => {
+    const filename = record.filename || "";
+    const recordKind = record.kind || record.metadata?.kind || (/\.(mp4|webm|mov)$/i.test(filename) ? "video" :
+      /\.(wav|mp3|flac|opus|ogg|m4a)$/i.test(filename) ? "audio" : "image");
+    if (kind && recordKind !== kind) return [];
+    const media = record.filename ? promptFileMedia([record.subfolder, record.filename].filter(Boolean).join("/"),
+      recordKind, role, id + "-" + index, record.type || "output") : promptUrlMedia(record.url, recordKind, role, id + "-" + index);
+    return media ? [media] : [];
+  });
+  const task = output.easyapi_task?.[0]?.latest?.data;
+  const taskData = task?.data || task?.output || task;
+  const taskUrl = taskData?.download_url || taskData?.video_url || taskData?.output?.video_url;
+  if (!entries.length && taskUrl) {
+    const media = promptUrlMedia(taskUrl, kind || "video", role, id + "-task-result");
+    if (media) entries.push(media);
+  }
+  if (entries.length || kind === "video") return entries;
+  return (node?.imgs || []).flatMap((image, index) => {
+    const media = promptUrlMedia(image.currentSrc || image.src, "image", role, id + "-preview-" + index);
+    return media ? [media] : [];
+  });
+}
+
+function promptInputNode(node, input) {
+  const link = node.graph?.links?.get?.(input.link) || node.graph?.links?.[input.link];
+  return link ? node.graph?.getNodeById?.(link.origin_id) : node.getInputNode?.(node.inputs.indexOf(input));
+}
+
+function promptSourceMedia(source, kind, role, id, seen = new Set()) {
+  if (!source || seen.has(source.id) || seen.size > 12) return [];
+  const pathSeen = new Set(seen);
+  pathSeen.add(source.id);
+  const type = source.comfyClass || source.type;
+  if (["LoadImage", "LoadImageOutput", "LoadVideo", "LoadAudio"].includes(type)) {
+    const name = type === "LoadVideo" ? "file" : type === "LoadAudio" ? "audio" : "image";
+    const media = promptFileMedia(value(source, name), kind, role, id,
+      type === "LoadImageOutput" ? "output" : "input");
+    return media ? [media] : [];
+  }
+  if (type === "EasyAPIMedia") {
+    const sourceKind = value(source, "kind", kind), selectedRole = value(source, "role", role);
+    const sourceRole = selectedRole && selectedRole !== "reference" ? selectedRole : "reference_" + sourceKind;
+    const entries = [];
+    for (const name of ["references", "image", "audio", "video"]) {
+      const input = source.inputs?.find(port => port.name === name);
+      if (input?.link == null) continue;
+      const inputKind = name === "references" ? sourceKind : name;
+      const inputRole = name === "references" || selectedRole && selectedRole !== "reference"
+        ? sourceRole : "reference_" + inputKind;
+      entries.push(...promptSourceMedia(promptInputNode(source, input), inputKind, inputRole, id + "-" + name, pathSeen));
+    }
+    const url = promptUrlMedia(value(source, "url"), sourceKind, sourceRole, id);
+    if (url) entries.push(url);
+    if (entries.length) return entries;
+  }
+  const ready = promptOutputMedia(source, kind, role, id);
+  return ready.length ? ready : [{ id, kind, role, ready: false, name: source.title || type || id }];
+}
+
+function nodePromptMedia(node, params) {
+  const media = [];
+  for (const name of [...Object.keys(VIDEO_PORTS), "references"]) {
+    const input = node.inputs?.find(port => port.name === name);
+    if (input?.link == null) continue;
+    const role = VIDEO_PORTS[input.name] || "reference_image";
+    const kind = role.includes("video") ? "video" : role.includes("audio") ? "audio" : "image";
+    media.push(...promptSourceMedia(promptInputNode(node, input), kind, role, "node-" + node.id + "-" + input.name));
+  }
+  if (!media.length) for (const [index, reference] of (Array.isArray(params.input_references) ? params.input_references : []).entries()) {
+    const entry = promptUrlMedia(reference.url, reference.type || "image", reference.role || "reference_image", "param-" + index);
+    if (entry) media.push(entry);
+  }
+  return media;
+}
+
+function promptSchemaConstraints(definition) {
+  const result = {};
+  for (const key of ["type", "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+    "minLength", "maxLength", "minItems", "maxItems", "format", "required"]) {
+    if (definition[key] !== undefined) result[key] = JSON.parse(JSON.stringify(definition[key]));
+  }
+  if (definition.items && typeof definition.items === "object") result.items = promptSchemaConstraints(definition.items);
+  if (definition.properties && typeof definition.properties === "object") result.properties = Object.fromEntries(
+    Object.entries(definition.properties).map(([name, field]) => [name, promptSchemaConstraints(field || {})]));
+  return result;
+}
+
+function promptSchemaCapabilities(metadata, scenario) {
+  if (!metadata || metadata.matched === false || metadata.declared === false) return { known: false };
+  const variant = metadata.video?.variants?.[scenario];
+  const schema = variant?.request_schema || metadata.request_schema || metadata.schema;
+  if (!schema?.properties) return { known: false };
+  const result = { known: true, ...promptSchemaConstraints(schema) };
+  if (scenario) result.scenario = scenario;
+  const roles = variant?.roles || metadata.video?.roles;
+  if (Array.isArray(roles)) result.inputRoles = [...roles];
+  return result;
 }
 function listOf(data, key) {
   return Array.isArray(data) ? data : (Array.isArray(data?.[key]) ? data[key] : Array.isArray(data?.data) ? data.data : []);
@@ -106,6 +297,8 @@ function getProfileManager() {
       onChanged: () => Promise.allSettled([...panels].map((panel) => panel.refreshPresets())),
     }),
     onChanged: async (profileId) => {
+      nodeProfilesSnapshot = undefined;
+      if (profileId) modelCatalog.invalidate(profileId);
       await Promise.allSettled([...panels].map(async (panel) => {
         if (profileId && String(value(panel.node, "profile_id")) === profileId) panel.realtime?.disconnect();
         await panel.refreshProfiles();
@@ -141,28 +334,55 @@ let pickerSequence = 0;
 class ModelPicker {
   constructor(onSelect) {
     this.items = []; this.onSelect = onSelect; this.selected = ""; this.active = -1;
+    const id = ++pickerSequence;
     this.root = el("div", { class: "ea-model-picker" });
-    this.input = el("input", { role: "combobox", autocomplete: "off", spellcheck: false });
+    this.root.dataset.captureWheel = "true";
+    this.input = el("input", { id: `easyapi-model-${id}`, role: "combobox", autocomplete: "off", spellcheck: false });
     this.input.setAttribute("aria-autocomplete", "list");
     this.input.setAttribute("aria-expanded", "false");
-    this.list = el("div", { class: "ea-model-list", role: "listbox", id: "easyapi-models-" + ++pickerSequence, hidden: true });
+    // Clicking the native scrollbar may move focus from the input to the list.
+    this.list = el("div", { class: "ea-model-list", role: "listbox", id: `easyapi-models-${id}`, tabIndex: -1, hidden: true });
     this.input.setAttribute("aria-controls", this.list.id);
-    this.input.addEventListener("focus", () => { this.input.select(); this.open(""); });
+    const reopen = () => {
+      if (!this.list.hidden) return;
+      this.input.select();
+      this.open("");
+    };
+    this.input.addEventListener("focus", reopen);
+    this.input.addEventListener("click", reopen);
     this.input.addEventListener("input", () => this.open(this.input.value));
-    this.input.addEventListener("blur", () => setTimeout(() => { if (!this.root.contains(document.activeElement)) this.close(); }, 120));
-    this.input.addEventListener("keydown", (event) => {
-      if (["ArrowDown", "ArrowUp"].includes(event.key)) {
-        event.preventDefault(); if (this.list.hidden) this.open("");
-        this.active = Math.max(0, Math.min(this.filtered.length - 1, this.active + (event.key === "ArrowDown" ? 1 : -1))); this.highlight();
-      } else if (event.key === "Enter") {
-        event.preventDefault();
-        const exact = this.items.find((item) => item.id === this.input.value.trim());
-        const candidate = exact || this.filtered?.[Math.max(this.active, 0)];
-        if (candidate && !this.list.hidden) this.choose(candidate);
-      } else if (event.key === "Escape") { event.preventDefault(); this.close(); }
+    this.root.addEventListener("focusout", (event) => {
+      if (!this.root.contains(event.relatedTarget)) this.close();
     });
+    this.root.addEventListener("keydown", (event) => this.handleKey(event));
+    this.list.addEventListener("wheel", (event) => {
+      // Leave canvas pinch zoom and horizontal panning available in ComfyUI.
+      if (!event.ctrlKey && !event.metaKey && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) event.stopPropagation();
+    }, { passive: true });
     this.root.append(this.input, this.list);
     this.translate();
+  }
+  handleKey(event) {
+    if (event.isComposing) return;
+    const arrow = event.key === "ArrowDown" || event.key === "ArrowUp";
+    if (!arrow && (this.list.hidden || !["Enter", "Escape"].includes(event.key))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (arrow) {
+      if (this.list.hidden) this.open("");
+      if (!this.filtered.length) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const last = this.filtered.length - 1;
+      this.active = this.active < 0 ? (direction > 0 ? 0 : last) : Math.max(0, Math.min(last, this.active + direction));
+      this.highlight();
+    } else if (event.key === "Enter") {
+      const exact = this.items.find((item) => item.id === this.input.value.trim());
+      const candidate = this.filtered[this.active] || exact || (this.filtered.length === 1 ? this.filtered[0] : null);
+      if (candidate) this.choose(candidate);
+    } else {
+      this.input.focus();
+      this.close();
+    }
   }
   translate() { this.input.placeholder = t("searchModels"); this.input.setAttribute("aria-label", t("model")); }
   setItems(items, selected) {
@@ -177,46 +397,85 @@ class ModelPicker {
   }
   open(term) {
     const query = String(term || "").toLowerCase().trim();
-    this.filtered = this.items.filter((item) => `${item.id} ${this.label(item)}`.toLowerCase().includes(query)).slice(0, 100);
+    this.filtered = this.items.filter((item) => `${item.id} ${this.label(item)}`.toLowerCase().includes(query));
     this.active = -1; this.list.replaceChildren();
+    this.input.removeAttribute("aria-activedescendant");
     this.filtered.forEach((item, index) => {
       const label = this.label(item);
-      const option = el("button", { type: "button", class: "ea-model-option", role: "option", id: this.list.id + "-" + index },
-        el("span", { class: "ea-model-name" }, label));
-      if (label !== item.id) option.append(el("small", { class: "ea-model-id" }, item.id));
-      option.setAttribute("aria-selected", String(item.id === this.selected));
+      const selected = item.id === this.selected;
+      const content = el("span", { class: "ea-model-option-content" }, el("span", { class: "ea-model-name" }, label));
+      const check = el("span", { class: "ea-model-check", hidden: !selected }, "✓");
+      check.setAttribute("aria-hidden", "true");
+      const option = el("button", { type: "button", class: "ea-model-option", role: "option", tabIndex: -1, id: this.list.id + "-" + index },
+        content, check);
+      if (label !== item.id) content.append(el("small", { class: "ea-model-id" }, item.id));
+      option.setAttribute("aria-selected", String(selected));
       const capability = item.capability_status;
-      if (capability === "unknown" || capability === "inferred") option.append(el("small", { class: "ea-model-capability" }, t(capability === "unknown" ? "unknownCapability" : "inferredCapability")));
+      if (capability === "unknown" || capability === "inferred") content.append(el("small", { class: "ea-model-capability" }, t(capability === "unknown" ? "unknownCapability" : "inferredCapability")));
       option.addEventListener("mousedown", (event) => event.preventDefault());
       option.addEventListener("click", () => this.choose(item)); this.list.append(option);
     });
     if (!this.filtered.length) this.list.append(el("div", { class: "ea-caption ea-model-empty" }, t("noMatches")));
     this.list.hidden = false; this.input.setAttribute("aria-expanded", "true");
+    this.fitList();
+    this.list.scrollTop = 0;
+    if (!query) this.revealOption(this.list.children[this.filtered.findIndex((item) => item.id === this.selected)]);
+  }
+  fitList() {
+    const panel = this.root.closest(".ea-node-panel");
+    if (!panel || !this.root.offsetWidth) return;
+    const anchor = this.root.getBoundingClientRect();
+    const scale = anchor.width / this.root.offsetWidth;
+    if (!scale) return;
+    const panelTop = panel.getBoundingClientRect().top + panel.clientTop * scale;
+    const top = Math.max(0, panelTop);
+    const bottom = Math.min(window.innerHeight, panelTop + panel.clientHeight * scale);
+    const above = (anchor.top - top) / scale - 5;
+    const below = (bottom - anchor.bottom) / scale - 5;
+    const openAbove = below < Math.min(this.list.scrollHeight + 2, 120) && above > below;
+    this.list.classList.toggle("ea-model-list-above", openAbove);
+    this.list.style.setProperty("--ea-model-list-height", `${Math.max(0, Math.floor(openAbove ? above : below))}px`);
   }
   highlight() {
     [...this.list.children].forEach((item, index) => item.classList.toggle("ea-active", index === this.active));
     const current = this.list.children[this.active];
-    if (current) { this.input.setAttribute("aria-activedescendant", current.id); current.scrollIntoView?.({ block: "nearest" }); }
+    if (!current) return;
+    this.input.setAttribute("aria-activedescendant", current.id);
+    this.revealOption(current);
   }
-  choose(item) { this.selected = item.id; this.close(); this.onSelect(item.id); }
+  revealOption(option) {
+    if (!option) return;
+    const top = option.offsetTop, bottom = top + option.offsetHeight;
+    if (top < this.list.scrollTop) this.list.scrollTop = top;
+    else if (bottom > this.list.scrollTop + this.list.clientHeight) this.list.scrollTop = bottom - this.list.clientHeight;
+  }
+  choose(item) {
+    const changed = this.selected !== item.id;
+    this.selected = item.id;
+    this.input.focus();
+    this.close();
+    if (changed) this.onSelect(item.id);
+  }
 }
 
 class NodePanel {
   constructor(node) {
     this.node = node; this.disposed = false; this.sequence = 0; this.schemaSequence = 0; this.mutating = false;
+    this.profileSequence = 0;
     this.targetField = widget(node, "request_body") ? "request_body" : "params_json";
-    this.root = el("section", { class: "easyapi-panel" });
-    this.profile = el("select", { onchange: () => this.chooseProfile(this.profile.value) });
-    this.profile.setAttribute("aria-label", t("connection"));
+    this.root = el("section", { class: "easyapi-panel ea-node-panel" });
+    this.content = el("div", { class: "ea-node-content" });
+    this.root.append(this.content);
     this.picker = new ModelPicker((id) => this.chooseModel(id));
+    this.picker.input.disabled = true;
     this.status = el("div", { class: "ea-status", role: "status" });
     this.error = el("div", { class: "ea-error", role: "alert" });
     this.schema = el("div", { class: "ea-schema" });
     this.preview = el("pre", { class: "ea-preview" });
-    this.modelLabel = field(t("model"), this.picker.root);
-    this.root.append(el("div", { class: "ea-title" }, el("span", {}, t("connection")), button(t("connectionSettings"), () => openProfiles(value(node, "profile_id")))),
-      el("div", { class: "ea-row" }, this.profile, button(t("refresh"), () => this.refreshModels(true))),
-      this.modelLabel, this.status, this.error);
+    this.modelInfo = el("span");
+    this.modelLabel = el("div", { class: "ea-inline-field" },
+      el("div", { class: "ea-field-name" }, el("label", { htmlFor: this.picker.input.id }, t("model")), this.modelInfo), this.picker.root);
+    this.content.append(this.modelLabel, this.status, this.error);
     this.createPrompt();
     this.hasModel = Boolean(widget(node, "model")); this.isVideo = (node.comfyClass || node.type) === "EasyAPIVideo";
     this.presetEligible = this.hasModel && PRESET_NODES.has(node.comfyClass || node.type);
@@ -225,10 +484,17 @@ class NodePanel {
     if (this.presetEligible) this.createPresetControls();
     if (this.isVideo) this.createVideoControls();
     if (widget(node, "task_id")) this.addTaskSelector();
-    this.root.append(this.schema); this.createAdvanced();
+    this.paramsHint = el("div", { class: "ea-caption", hidden: true }, t("linkedInput"));
+    this.content.append(this.schema, this.paramsHint); this.createAdvanced();
     if ((node.comfyClass || node.type) === "EasyAPIRealtime") {
-      this.realtime = new RealtimePanel(this); this.root.append(this.realtime.root);
-    } else this.root.append(this.preview);
+      this.realtime = new RealtimePanel(this); this.content.append(this.realtime.root);
+    } else this.content.append(this.preview);
+    this.maxPanelHeight = this.realtime ? 640 : 480;
+    this.root.style.setProperty("--ea-max-panel-height", this.maxPanelHeight + "px");
+    if (typeof ResizeObserver !== "undefined") {
+      this.contentObserver = new ResizeObserver(() => this.resize());
+      this.contentObserver.observe(this.content);
+    }
     this.currentIdentity = this.identity(); this.persistCurrent();
     for (const name of ["profile_id", "model", "params_json", "request_body", "mode"]) {
       const target = widget(node, name); if (target) target.hidden = true;
@@ -241,8 +507,12 @@ class NodePanel {
       target.callback = (...args) => {
         original?.apply(target, args);
         if (this.mutating || app.configuringGraph || this.disposed) return;
-        if (name === "prompt") { if (this.promptEditor) this.promptEditor.value = target.value; return; }
-        if (["profile_id", "model", "operation"].includes(name)) { if (name !== "profile_id") this.autoPresetCandidate = false; this.transition(); this.refreshModels(); }
+        if (name === "prompt") { this.promptEditor?.setValue(target.value); return; }
+        if (["profile_id", "model", "operation"].includes(name)) {
+          if (name !== "profile_id") this.autoPresetCandidate = false;
+          this.transition();
+          this.refreshModels();
+        }
         else if (name === "mode") { this.persistCurrent(); this.refreshSchema(); }
         else { this.persistCurrent(); this.syncAdvanced(); this.renderForm(); }
       };
@@ -265,22 +535,68 @@ class NodePanel {
     if (restored && !preserve) {
       this.write(this.targetField, JSON.stringify(restored.params, null, 2)); this.write("mode", restored.mode);
     } else if (!preserve) { this.write(this.targetField, "{}"); this.write("mode", "auto"); }
-    this.schemaAbort?.abort(); ++this.schemaSequence; this.metadata = null; this.formSchema = null; this.schema.replaceChildren();
+    this.clearSchema();
     this.currentIdentity = next; this.jsonDirty = false; this.persistCurrent(); this.syncAdvanced();
+    if (this.jsonStatus) this.jsonStatus.textContent = "";
+  }
+  clearSchema() {
+    this.schemaAbort?.abort(); ++this.schemaSequence; this.metadata = null; this.formSchema = null;
+    this.schema.replaceChildren();
+    if (this.isVideo) this.updateVideo();
   }
   configure() {
     // Backend widget values are the authoritative selected draft when loading an old workflow.
     this.wasConfigured = true; this.preserveLoadedParams = true; this.autoPresetCandidate = false;
+    this.layoutHeight = undefined;
     this.currentIdentity = this.identity(); this.persistCurrent(); this.jsonDirty = false;
-    this.syncAdvanced(); this.updateBacking(); this.refreshProfiles();
+    this.promptEditor?.setValue(value(this.node, "prompt"), { reset: true });
+    this.syncAdvanced(); this.updateBacking(); this.resize(); this.refreshProfiles();
   }
   createPrompt() {
     if (!widget(this.node, "prompt")) return;
-    this.promptEditor = el("textarea", { rows: 4, value: value(this.node, "prompt"), oninput: () => this.write("prompt", this.promptEditor.value) });
-    this.promptEditor.setAttribute("aria-label", t("prompt"));
-    this.promptField = field(t("prompt"), this.promptEditor);
+    this.promptEditor = new PromptEditor({
+      value: value(this.node, "prompt"), t, getLocale: hostLocale,
+      onInput: (prompt) => {
+        this.write("prompt", prompt);
+        this.node.graph?.change?.();
+      },
+      getContext: () => this.promptContext(),
+      loadModels: promptModels, transform: transformPrompt, resolveMedia: resolvePromptMedia,
+      historyKey: (create) => this.promptHistoryKey(create),
+    });
     this.promptHint = el("div", { class: "ea-caption", hidden: true }, t("linkedInput"));
-    this.root.append(this.promptField, this.promptHint);
+    this.content.append(this.promptEditor.root, this.promptHint);
+  }
+  promptContext() {
+    let params = {};
+    try { params = this.params(); } catch { /* Invalid JSON is still editable in the node. */ }
+    const model = this.connected("model") ? "" : String(value(this.node, "model"));
+    const mode = String(value(this.node, "mode", "auto"));
+    const scenario = this.metadata?.video ? videoPortState(this.node.inputs || [], this.metadata.video, mode).selected : "";
+    return {
+      profileId: this.connected("profile_id") ? "" : String(value(this.node, "profile_id")),
+      modelId: model, targetModel: model, mode,
+      params, operation: this.operationId(), media: nodePromptMedia(this.node, params),
+      capabilities: promptSchemaCapabilities(this.metadata, scenario),
+      resultMedia: promptOutputMedia(this.node, "video", "result_video", "node-result-" + this.node.id),
+      profiles: (this.profiles || []).map(profile => {
+        const id = profile.id || profile.profile_id;
+        return { id, name: profile.name || id };
+      }),
+    };
+  }
+  promptHistoryKey(create) {
+    const id = this.node.id;
+    if (id == null || String(id) === "-1") return "";
+    let key = this.node.properties?.easyapi_prompt_history_id;
+    if (typeof key !== "string" || !/^[a-z0-9-]{10,64}$/i.test(key)) {
+      if (!create) return "";
+      key = globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+      this.node.properties ??= {};
+      this.node.properties.easyapi_prompt_history_id = key;
+      this.node.graph?.change?.();
+    }
+    return key + "." + id;
   }
   connected(name) { return (this.node.inputs || []).some((input) => input.name === name && input.link != null); }
   updateBacking() {
@@ -293,21 +609,28 @@ class NodePanel {
       if (!linked && index >= 0) rules.push(`[data-node-id="${id}"] [data-testid="node-widget"]:has([data-slot-key="${id}-in-${index}"]){display:none!important}`);
     }
     this.backingCSS = rules.join("\n");
-    if (this.promptField) {
-      this.promptField.hidden = this.connected("prompt"); this.promptHint.hidden = !this.connected("prompt");
-      this.promptEditor.value = value(this.node, "prompt");
+    if (this.promptEditor) {
+      const linked = this.connected("prompt");
+      this.promptEditor.root.hidden = linked;
+      this.promptHint.hidden = !linked;
+      this.promptEditor.setLinked(linked);
+      this.promptEditor.setValue(value(this.node, "prompt"));
     }
-    const driven = this.connected("profile_id") || this.connected("model");
-    this.profile.disabled = this.connected("profile_id"); this.picker.input.disabled = driven;
-    if (driven) this.status.textContent = t("linkedSelection");
+    this.modelDriven = this.connected("profile_id") || this.connected("model");
+    const paramsDriven = this.connected(this.targetField);
+    this.schema.hidden = paramsDriven;
+    this.paramsHint.hidden = !paramsDriven;
+    if (this.advanced) this.advanced.hidden = paramsDriven;
+    if (this.presetControls) this.presetControls.hidden = this.modelDriven || paramsDriven;
     this.writePortCSS();
   }
   writePortCSS() { portRules.set(this, (this.backingCSS || "") + "\n" + (this.videoCSS || "")); portSheet.textContent = [...portRules.values()].join("\n"); }
-  chooseProfile(id, automatic = false) {
-    if (String(value(this.node, "profile_id")) === String(id)) return;
-    if (!automatic) this.preserveLoadedParams = false;
-    this.realtime?.disconnect(); this.write("profile_id", id); this.transition(automatic);
-    this.profile.value = id; this.refreshModels(true);
+  chooseProfile(id) {
+    if (this.connected("profile_id") || !this.profiles?.some((profile) => (profile.id || profile.profile_id) === id) ||
+      String(value(this.node, "profile_id")) === id) return;
+    this.preserveLoadedParams = false;
+    this.realtime?.disconnect(); this.write("profile_id", id); this.transition();
+    this.refreshModels();
   }
   chooseModel(id) {
     if (String(value(this.node, "model")) === id) return;
@@ -329,74 +652,87 @@ class NodePanel {
     this.advanced.append(el("summary", {}, t("advancedJson")), el("p", { class: "ea-caption" }, t("jsonHint")),
       this.jsonEditor, el("div", { class: "ea-row" }, button(t("applyJson"), apply), this.jsonStatus));
     this.advanced.addEventListener("toggle", () => this.resize());
-    this.root.append(this.advanced); this.syncAdvanced();
+    this.content.append(this.advanced); this.syncAdvanced();
   }
   syncAdvanced() { if (this.jsonEditor && !this.jsonDirty) this.jsonEditor.value = value(this.node, this.targetField, "{}"); }
   commitParams(next) {
     let safe = objectValue(JSON.stringify(next));
     if (this.metadata?.matched !== false && this.metadata?.declared !== false && this.formSchema) safe = requiredDefaults(this.formSchema, safe);
     this.write(this.targetField, JSON.stringify(safe, null, 2)); this.persistCurrent(); this.syncAdvanced(); this.node.graph?.change?.();
+    this.promptEditor?.contextChanged();
   }
   async refreshProfiles() {
+    const sequence = ++this.profileSequence;
     try {
-      const data = await jsonRequest("/easyapi/profiles"); if (this.disposed) return;
+      const data = await nodeProfiles();
+      if (this.disposed || sequence !== this.profileSequence) return;
       this.profiles = listOf(data, "profiles"); this.defaultId = data.default_profile_id || null;
-      let current = String(value(this.node, "profile_id"));
-      this.profile.replaceChildren(el("option", { value: "" }, t("chooseConnection")), ...this.profiles.map((profile) => {
-        const id = profile.id || profile.profile_id;
-        return el("option", { value: id }, (profile.name || id) + (id === this.defaultId ? " · " + t("defaultConnection") : ""));
-      }));
+      const current = String(value(this.node, "profile_id"));
       const selected = selectProfile(current, this.profiles, this.defaultId);
-      if (selected !== current) { this.write("profile_id", selected); this.transition(true); current = selected; }
-      if (current && !this.profiles.some((profile) => (profile.id || profile.profile_id) === current)) {
-        this.profile.append(el("option", { value: current }, current)); this.profile.value = current;
-        this.status.textContent = t("profileUnavailable"); return;
-      }
-      this.profile.value = current;
-      if (!current) {
-        this.picker.input.disabled = true; this.picker.setItems([], value(this.node, "model"));
-        this.status.textContent = t(this.profiles.length > 1 ? "chooseProfileMultiple" : "profileNeeded"); return;
-      }
+      if (selected !== current && !this.connected("profile_id")) { this.write("profile_id", selected); this.transition(true); }
       await this.refreshModels();
-    } catch (error) { if (!this.disposed) this.error.textContent = error.message; }
+    } catch (error) { if (!this.disposed && sequence === this.profileSequence) this.error.textContent = error.message; }
   }
   updateModelStatus() {
     const current = String(value(this.node, "model"));
     const found = this.models?.find((model) => model.id === current);
-    this.status.textContent = current && !found ? t("missingModel") : t("modelCount", { count: this.models?.length || 0 });
+    this.status.textContent = current && !found ? t("missingModel") : "";
     if (!this.models?.length && !current) this.status.textContent = t("noModels");
   }
   async refreshModels(force = false) {
+    const sequence = ++this.sequence;
+    this.modelAbort?.abort();
     const profileId = String(value(this.node, "profile_id"));
-    if (!profileId) return;
-    if (this.connected("profile_id") || this.connected("model")) { this.status.textContent = t("linkedSelection"); this.schema.replaceChildren(); return; }
+    this.models = [];
+    this.picker.input.disabled = true;
+    this.picker.setItems([], value(this.node, "model"));
+    this.loadingModels = false;
+    this.error.textContent = "";
+    if (this.presetSelect) {
+      ++this.presetSequence;
+      this.presetSelect.disabled = true;
+      this.applyPresetButton.disabled = true;
+    }
+    const profile = this.profiles?.find((row) => (row.id || row.profile_id) === profileId);
+    if (this.modelDriven || !profile) {
+      this.clearSchema();
+      this.status.textContent = t(this.modelDriven ? "linkedSelection" : profileId ? "profileUnavailable" :
+        this.profiles?.length > 1 ? "nodeDefaultConnectionNeeded" : "nodeConnectionNeeded");
+      return;
+    }
     if (!this.hasModel) {
       this.status.textContent = (this.node.comfyClass || this.node.type) === "EasyAPITools" ? t("toolModelManaged") : "";
-      this.schema.replaceChildren(); this.syncAdvanced(); return;
+      this.clearSchema(); this.syncAdvanced(); return;
     }
-    const sequence = ++this.sequence;
-    this.modelAbort?.abort(); this.modelAbort = new AbortController();
-    this.status.textContent = t("loadingModels"); this.error.textContent = "";
+    this.modelAbort = new AbortController();
+    this.loadingModels = true;
+    this.status.textContent = t("loadingModels");
     try {
-      const data = await jsonRequest(`/easyapi/models?${new URLSearchParams({ profile_id: profileId, family: familyFor(this.node),
-        operation: String(value(this.node, "operation", "realtime")), locale: localeQuery(), refresh: force ? "1" : "0" })}`, { signal: this.modelAbort.signal });
-      if (this.disposed || sequence !== this.sequence) return;
+      const data = await modelCatalog.get({
+        profileId, family: familyFor(this.node), operation: String(value(this.node, "operation", "realtime")),
+        locale: localeQuery(), revision: profile.model_catalog_revision, refresh: force, signal: this.modelAbort.signal,
+      });
+      if (this.disposed || sequence !== this.sequence || this.modelDriven) return;
       this.models = listOf(data, "models").map((model) => typeof model === "string" ? { id: model } : { ...model, id: model.id || model.name });
-      this.picker.input.disabled = false; this.picker.setItems(this.models, value(this.node, "model"));
-      this.updateModelStatus(); await this.refreshPresets(true); await this.refreshSchema();
+      this.picker.input.disabled = !this.models.length; this.picker.setItems(this.models, value(this.node, "model"));
+      this.updateModelStatus();
+      await this.refreshPresets(true);
+      if (sequence === this.sequence && !this.disposed) await this.refreshSchema();
     } catch (error) {
       if (error.name !== "AbortError" && sequence === this.sequence && !this.disposed) {
-        this.picker.input.disabled = false; this.picker.setItems([], value(this.node, "model"));
         this.status.textContent = t("authorityError"); this.error.textContent = error.message;
       }
+    } finally {
+      if (sequence === this.sequence && !this.disposed) this.loadingModels = false;
     }
   }
   async refreshSchema() {
     const profile = String(value(this.node, "profile_id")), model = String(value(this.node, "model"));
-    if (!profile || !model || !this.hasModel) return;
+    if (!model || !this.hasModel || this.modelDriven ||
+      !this.profiles?.some((connection) => (connection.id || connection.profile_id) === profile)) return;
     const sequence = ++this.schemaSequence;
     this.schemaAbort?.abort(); this.schemaAbort = new AbortController();
-    const mode = value(this.node, "mode", "auto");
+    const mode = value(this.node, "mode", "auto") || "auto";
     const provisional = this.isVideo ? videoPortState(this.node.inputs || [], this.metadata?.video, mode).selected : "";
     const query = { profile_id: profile, model, operation: String(value(this.node, "operation", "realtime")), locale: localeQuery() };
     if (provisional) query.variant = provisional;
@@ -410,7 +746,7 @@ class NodePanel {
         schema = metadata.video?.variants?.[state.selected]?.request_schema || schema;
       }
       this.formSchema = schema;
-      if (!this.preserveLoadedParams && metadata.matched !== false && metadata.declared !== false) {
+      if (!this.connected(this.targetField) && !this.preserveLoadedParams && metadata.matched !== false && metadata.declared !== false) {
         const before = this.params(), withDefaults = requiredDefaults(schema, before);
         if (JSON.stringify(before) !== JSON.stringify(withDefaults)) this.commitParams(withDefaults);
       }
@@ -420,19 +756,22 @@ class NodePanel {
     }
   }
   renderForm() {
-    if (!widget(this.node, this.targetField) || !this.hasModel) return;
-    renderSchemaForm(this.schema, this.formSchema || {}, () => this.params(), (next) => { this.autoPresetCandidate = false; this.commitParams(next); }, t, () => this.resize());
+    if (!widget(this.node, this.targetField) || !this.formSchema || this.modelDriven) return;
+    renderSchemaForm(this.schema, this.formSchema, () => this.params(), (next) => { this.autoPresetCandidate = false; this.commitParams(next); }, t, () => this.resize());
   }
   operationId() { return String(value(this.node, "operation", (this.node.comfyClass || this.node.type) === "EasyAPIRealtime" ? "realtime" : "")); }
   createPresetControls() {
-    this.presetSelect = el("select", { onchange: () => { this.applyPresetButton.disabled = !this.presetSelect.value; } });
+    this.presetSequence = 0;
+    this.presetSelect = el("select", { disabled: true, onchange: () => { this.applyPresetButton.disabled = !this.presetSelect.value; } },
+      el("option", { value: "", disabled: true }, t("choosePreset")));
     this.presetSelect.setAttribute("aria-label", t("presetsTab"));
     this.applyPresetButton = button(t("applyPreset"), () => {
       const preset = this.presets?.find((record) => record.id === this.presetSelect.value);
       if (preset) this.applyPresetRecord(preset, false).catch((error) => { this.error.textContent = error.message; });
     }); this.applyPresetButton.disabled = true;
-    this.root.append(el("div", { class: "ea-preset-controls" }, this.presetSelect,
-      el("div", { class: "ea-row" }, this.applyPresetButton, button(t("saveAsPreset"), async () => {
+    this.presetControls = el("details", { class: "ea-preset-controls" }, el("summary", {}, t("presetsTab")),
+      el("div", { class: "ea-preset-fields" }, this.presetSelect,
+        el("div", { class: "ea-row" }, this.applyPresetButton, button(t("saveAsPreset"), async () => {
         try {
           if (this.jsonDirty) throw new Error(t("applyJsonFirst"));
           const profile = String(value(this.node, "profile_id")), model = String(value(this.node, "model"));
@@ -441,20 +780,24 @@ class NodePanel {
           await getProfileManager().presetPanel.newFromNode({ profile_id: profile, operation: this.operationId(), model, params: this.params() });
         } catch (error) { this.error.textContent = error.message; }
       }))));
+    this.presetControls.addEventListener("toggle", () => this.resize());
+    this.content.append(this.presetControls);
   }
   async refreshPresets(considerDefault = false) {
-    if (!this.presetEligible) return;
+    if (!this.presetEligible || this.modelDriven || this.connected(this.targetField)) return;
     const profile = String(value(this.node, "profile_id")), operation = this.operationId();
     if (!profile || !operation) return;
-    const key = JSON.stringify([profile, operation]); this.presetRequestKey = key;
+    const sequence = ++this.presetSequence;
     try {
       const data = await jsonRequest(`/easyapi/presets?${new URLSearchParams({ profile_id: profile, operation })}`);
-      if (this.disposed || this.presetRequestKey !== key || String(value(this.node, "profile_id")) !== profile || this.operationId() !== operation) return;
+      if (this.disposed || this.presetSequence !== sequence || this.modelDriven || this.connected(this.targetField) ||
+        String(value(this.node, "profile_id")) !== profile || this.operationId() !== operation) return;
       this.presets = (data.presets || []).filter((record) => record.profile_id === profile && record.operation === operation);
       const selected = this.presetSelect.value;
-      this.presetSelect.replaceChildren(el("option", { value: "" }, t("choosePreset")), ...this.presets.map((record) =>
+      this.presetSelect.replaceChildren(el("option", { value: "", disabled: true, hidden: this.presets.length > 0 }, t("choosePreset")), ...this.presets.map((record) =>
         el("option", { value: record.id }, record.name + " · " + record.model + (data.default_preset_ids?.[operation] === record.id ? " · " + t("defaultPreset") : ""))));
       this.presetSelect.value = this.presets.some((record) => record.id === selected) ? selected : "";
+      this.presetSelect.disabled = !this.presets.length;
       this.applyPresetButton.disabled = !this.presetSelect.value;
       if (considerDefault && !this.autoPresetChecked && this.autoPresetCandidate && !this.wasConfigured && !value(this.node, "model") && Object.keys(this.params()).length === 0) {
         this.autoPresetChecked = true;
@@ -462,7 +805,7 @@ class NodePanel {
         if (preset && this.models?.some((model) => model.id === preset.model)) { await this.applyPresetRecord(preset, true); this.presetSelect.value = preset.id; this.applyPresetButton.disabled = false; }
         else if (preset) this.status.textContent = t("defaultPresetUnavailable");
       }
-    } catch (error) { if (!this.disposed) this.error.textContent = error.message; }
+    } catch (error) { if (!this.disposed && this.presetSequence === sequence) this.error.textContent = error.message; }
   }
   async applyPresetRecord(preset, automatic) {
     if (preset.profile_id !== String(value(this.node, "profile_id")) || preset.operation !== this.operationId()) throw new Error(t("presetScopeMismatch"));
@@ -475,28 +818,31 @@ class NodePanel {
     this.updateModelStatus(); if (!automatic) await this.refreshSchema();
   }
   createVideoControls() {
-    this.videoBox = el("div", { class: "ea-video-inputs" });
+    this.videoBox = el("div", { class: "ea-video-inputs", hidden: true });
     this.modeSelect = el("select", { onchange: () => { this.write("mode", this.modeSelect.value); this.persistCurrent(); this.refreshSchema(); } });
-    this.modeLabel = field(t("videoMode"), this.modeSelect);
-    this.videoInfo = el("div", { class: "ea-caption" }); this.videoError = el("div", { class: "ea-error", role: "status" });
-    this.videoBox.append(this.modeLabel, this.videoInfo, this.videoError); this.root.append(this.videoBox);
+    this.modeSelect.setAttribute("aria-label", t("videoMode"));
+    this.modeLabel = el("div", { class: "ea-inline-field" }, el("span", {}, t("videoMode")), this.modeSelect);
+    this.videoError = el("div", { class: "ea-error", role: "status" });
+    this.videoBox.append(this.modeLabel, this.videoError); this.content.append(this.videoBox);
   }
   updateVideo() {
     const inputs = this.node.inputs || [], video = this.metadata?.video || {};
-    const state = videoPortState(inputs, video, value(this.node, "mode", "auto"));
+    const selectedMode = value(this.node, "mode", "auto") || "auto";
+    const state = videoPortState(inputs, video, selectedMode);
     const scenarios = video.scenarios || [];
     this.modeSelect.replaceChildren(el("option", { value: "auto" }, t("videoAuto")), ...scenarios.map((scenario) =>
       el("option", { value: scenario }, video.variants?.[scenario]?.label || t("scenario." + scenario))));
-    const selectedMode = value(this.node, "mode", "auto");
     if (selectedMode !== "auto" && !scenarios.includes(selectedMode)) this.modeSelect.append(el("option", { value: selectedMode }, t("scenario." + selectedMode)));
     this.modeSelect.value = selectedMode;
     this.modeLabel.hidden = !state.ambiguous && selectedMode === "auto";
-    this.videoInfo.textContent = state.known ? t("supportedRoles", { roles: (video.roles || []).map((role) => t("port." + role)).join(" · ") || t("scenario.text-to-video") }) : t("videoUndeclared");
+    const info = state.known ? t("supportedRoles", { roles: (video.roles || []).map((role) => t("port." + role)).join(" · ") || t("scenario.text-to-video") }) : t("videoUndeclared");
+    this.modelInfo.replaceChildren(...(this.metadata ? [makeFieldHelp(info, t("videoInputs")).element] : []));
     const problems = [];
     if (state.invalid.length) problems.push(t("incompatibleReferences", { ports: state.invalid.map((name) => this.portLabel(name)).join(", ") }));
     if (state.selected && scenarios.length && !scenarios.includes(state.selected)) problems.push(t("unsupportedScenario", { mode: t("scenario." + state.selected) }));
     if (state.ambiguous) problems.push(t("videoAmbiguous"));
     this.videoError.textContent = problems.join("\n");
+    this.videoBox.hidden = !this.metadata || (this.modeLabel.hidden && !problems.length);
     // Visibility uses the model-wide union: hiding all image ports in the initial
     // text-only inferred state would make switching to image input impossible.
     const unionKnown = Array.isArray(video.roles) && (video.roles.length > 0 || scenarios.length > 0);
@@ -523,7 +869,7 @@ class NodePanel {
       if (!handle) return;
       this.write("task_id", handle.task_id); if (handle.profile_id) this.write("profile_id", handle.profile_id);
       if (handle.operation && widget(this.node, "operation")?.options?.values?.includes(handle.operation)) this.write("operation", handle.operation);
-      this.transition(); this.profile.value = handle.profile_id;
+      this.transition(); this.refreshModels();
     } });
     const refresh = async () => {
       try { this.savedTasks = listOf(await jsonRequest("/easyapi/tasks"), "tasks");
@@ -531,26 +877,32 @@ class NodePanel {
           el("option", { value: JSON.stringify([task.profile_id, task.task_id]) }, `${task.task_id} · ${task.state || "submitted"}`)));
       } catch (error) { this.error.textContent = error.message; }
     };
-    this.root.append(el("div", { class: "ea-row" }, select, button("刷新任务", refresh))); refresh();
+    this.content.append(el("div", { class: "ea-row" }, select, button("刷新任务", refresh))); refresh();
   }
   translate() {
-    this.picker.translate(); this.profile.setAttribute("aria-label", t("connection"));
-    this.promptEditor?.setAttribute("aria-label", t("prompt")); this.jsonEditor?.setAttribute("aria-label", t("advancedJson"));
+    this.picker.translate();
+    this.promptEditor?.translate(); this.jsonEditor?.setAttribute("aria-label", t("advancedJson"));
+    this.modeSelect?.setAttribute("aria-label", t("videoMode"));
     this.realtime?.translate?.(); this.refreshProfiles();
   }
-  minHeight() { return Math.max(this.realtime ? 550 : 245, Math.min(this.root.scrollHeight || 300, this.realtime ? 1000 : 820)); }
+  minHeight() { return Math.min(this.content.offsetHeight || 160, this.maxPanelHeight); }
   resize() {
     if (this.disposed || this.resizing) return;
     this.resizing = true;
     requestAnimationFrame(() => {
       this.resizing = false; if (this.disposed) return;
       const height = this.node.computeSize?.()[1];
-      if (height) this.node.setSize?.([Math.max(this.node.size?.[0] || 0, 440), height]);
+      if (height && height !== this.layoutHeight) {
+        this.layoutHeight = height;
+        this.node.setSize?.([this.node.size?.[0] || 360, height]);
+      }
       this.node.graph?.setDirtyCanvas(true, true);
     });
   }
   dispose() {
     this.disposed = true; this.modelAbort?.abort(); this.schemaAbort?.abort(); clearTimeout(this.connectionTimer);
+    this.contentObserver?.disconnect();
+    this.promptEditor?.dispose();
     this.realtime?.dispose(); panels.delete(this); portRules.delete(this); portSheet.textContent = [...portRules.values()].join("\n"); this.root.remove();
   }
 }
@@ -795,6 +1147,24 @@ app.registerExtension({
   name: "EasyAPI.Creator",
   commands: [{ id: "EasyAPI.OpenManager", label: () => t("managerTitle"), function: () => openProfiles() }],
   menuCommands: [{ path: ["EasyAPI"], commands: ["EasyAPI.OpenManager"] }],
+  getNodeMenuItems(node) {
+    const panel = node.easyapiPanel;
+    if (!(panel instanceof NodePanel)) return [];
+    const options = [];
+    const profiles = panel.profiles || [];
+    const current = String(value(node, "profile_id"));
+    const hasCurrent = profiles.some((profile) => (profile.id || profile.profile_id) === current);
+    if (panel.hasModel && hasCurrent && !panel.modelDriven) {
+      options.push({ content: t("refreshModelList"), disabled: panel.loadingModels, callback: () => panel.refreshModels(true) });
+    }
+    if (!panel.connected("profile_id") && (profiles.length > 1 || !hasCurrent)) {
+      const choices = profiles.map(({ id, profile_id }) => id || profile_id).filter((id) => /^[\w.-]+$/.test(id || ""))
+        .map((id) => ({ content: id === current ? "✓ " + id : id, callback: () => panel.chooseProfile(id) }));
+      if (choices.length) options.push({ content: t("connection"), submenu: { options: choices }, has_submenu: true });
+      if (!hasCurrent) options.push({ content: t("connectionSettings"), callback: () => openProfiles() });
+    }
+    return options;
+  },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (PRESET_NODES.has(nodeData.name)) {
       const specification = nodeData.input?.required?.operation || nodeData.input?.optional?.operation;
@@ -820,7 +1190,7 @@ app.registerExtension({
       const result = created?.apply(this, args);
       const panel = new NodePanel(this); this.easyapiPanel = panel;
       const dom = this.addDOMWidget("easyapi_controls", "easyapi_controls", panel.root,
-        { serialize: false, hideOnZoom: false, getMinHeight: () => panel.minHeight() });
+        { serialize: false, hideOnZoom: false, margin: 0, getMinHeight: () => panel.minHeight() });
       const widgetIndex = this.widgets.indexOf(dom);
       if (widgetIndex >= 0) { this.widgets.splice(widgetIndex, 1); this.widgets.unshift(dom); }
       const removed = this.onRemoved;
@@ -830,14 +1200,25 @@ app.registerExtension({
       const added = this.onAdded;
       this.onAdded = (...values) => { added?.apply(this, values); panel.updateBacking(); panel.resize(); };
       const connected = this.onConnectionsChange;
-      this.onConnectionsChange = (...values) => { connected?.apply(this, values); panel.updateBacking();
-        clearTimeout(panel.connectionTimer); panel.connectionTimer = setTimeout(() => { if (!panel.disposed) panel.refreshSchema(); }, 80); };
-      this.size = [Math.max(this.size?.[0] || 0, 440), this.size?.[1] || 600];
+      this.onConnectionsChange = (...values) => {
+        connected?.apply(this, values);
+        const wasDriven = panel.modelDriven;
+        panel.updateBacking(); panel.resize();
+        panel.promptEditor?.contextChanged();
+        clearTimeout(panel.connectionTimer);
+        if (wasDriven !== panel.modelDriven) {
+          if (panel.modelDriven || value(this, "profile_id")) panel.refreshModels();
+          else panel.refreshProfiles();
+        }
+        else panel.connectionTimer = setTimeout(() => { if (!panel.disposed) { panel.refreshSchema(); panel.refreshPresets(); } }, 80);
+      };
+      this.size = [Math.max(this.size?.[0] || 0, 360), this.size?.[1] || 300];
       return result;
     };
     const executed = nodeType.prototype.onExecuted;
     nodeType.prototype.onExecuted = function (message, ...args) {
       executed?.call(this, message, ...args);
+      this.easyapiPromptOutput = message;
       const text = message?.easyapi_text?.join("\n") || "";
       if (this.easyapiPanel) this.easyapiPanel.preview.textContent = text.slice(0, 12000);
     };
@@ -848,4 +1229,9 @@ app.registerExtension({
   },
   beforeConfigureGraph() { for (const panel of panels) panel.realtime?.disconnect(); },
 });
-window.addEventListener("pagehide", () => { for (const panel of panels) panel.realtime?.disconnect(); });
+window.addEventListener("pagehide", () => {
+  for (const panel of panels) {
+    panel.promptEditor?.finishTyping();
+    panel.realtime?.disconnect();
+  }
+});

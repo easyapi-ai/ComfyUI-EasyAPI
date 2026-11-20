@@ -10,12 +10,13 @@ class FrontendRealtimeTests(unittest.TestCase):
     def test_session_controls_audio_batching_and_resource_cleanup(self):
         source_path = Path(__file__).parents[1] / "web" / "easyapi.js"
         worklet_path = source_path.with_name("audio-worklet.mjs")
+        catalog_path = source_path.with_name("model-catalog.js")
         script = r'''
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { pathToFileURL } = require('node:url');
-const filename = process.argv[1], workletFilename = process.argv[2];
+const filename = process.argv[1], workletFilename = process.argv[2], catalogFilename = process.argv[3];
 let code = fs.readFileSync(filename, 'utf8').replace(/^import .*;\r?\n/gm, '');
 code = code.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(filename).href));
 const context = { URL, Float32Array, Uint8Array, DataView, Set, Map, console,
@@ -27,6 +28,7 @@ const context = { URL, Float32Array, Uint8Array, DataView, Set, Map, console,
   window: { addEventListener() {} }, WebSocket: { OPEN: 1 }
 };
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(catalogFilename, 'utf8').replace(/^export /gm, ''), context);
 vm.runInContext(code + '\nglobalThis.testHooks = { RealtimePanel, pcm16Base64 };', context);
 const { RealtimePanel, pcm16Base64 } = context.testHooks;
 const panel = Object.create(RealtimePanel.prototype);
@@ -78,7 +80,7 @@ for (let i = 0; i < 75; i++) processor.process([[new Float32Array(128).fill(.5)]
 assert.equal(packets.length, 10); // 200 ms becomes ten bounded 20 ms frames.
 assert.equal(packets[0].length, 960); assert.equal(packets[0][959], .5);
 '''
-        result = subprocess.run([shutil.which("node"), "-e", script, str(source_path), str(worklet_path)],
+        result = subprocess.run([shutil.which("node"), "-e", script, str(source_path), str(worklet_path), str(catalog_path)],
                                 text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
 

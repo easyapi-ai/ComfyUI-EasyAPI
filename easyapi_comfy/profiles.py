@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
 from pathlib import Path
@@ -60,6 +62,8 @@ class ProfileStore:
         self._lock = threading.RLock()
         self._on_change = on_change
         self._checks = {}
+        self._catalog_secret = secrets.token_bytes(32)
+        self._catalog_generations = {}
 
     def _read(self) -> dict:
         profiles = self._read_state()["profiles"]
@@ -176,8 +180,12 @@ class ProfileStore:
     def public_status(self, profile: dict) -> dict:
         with self._lock:
             revision, result = self._checks.get(profile["id"], (None, {}))
-            status = result if revision == self._revision(profile) else {"connection_status": "untested"}
-            return self.public(profile) | status
+            profile_revision = self._revision(profile)
+            status = result if revision == profile_revision else {"connection_status": "untested"}
+            generation = self._catalog_generations.get(profile["id"], "")
+            # The browser gets an opaque per-process identity, never a credential or its unkeyed hash.
+            catalog_revision = hmac.digest(self._catalog_secret, f"{generation}:{profile_revision}".encode(), "sha256").hex()
+            return self.public(profile) | status | {"model_catalog_revision": catalog_revision}
 
     def list_public(self) -> list[dict]:
         with self._lock:
@@ -229,6 +237,7 @@ class ProfileStore:
             atomic_json(self.path, state)
             if any(previous.get(k) != profile.get(k) for k in ("base_url", "api_key", "client_id")):
                 self._checks.pop(profile_id, None)
+                self._catalog_generations[profile_id] = secrets.token_hex(16)
                 if self._on_change:
                     self._on_change(profile_id)
             return self.public_status(profile)
@@ -241,6 +250,7 @@ class ProfileStore:
                 raise ValueError("This connection is managed by the ComfyUI server environment.")
             profiles.pop(profile_id, None)
             self._checks.pop(profile_id, None)
+            self._catalog_generations.pop(profile_id, None)
             if state["default_profile_id"] == profile_id:
                 state["default_profile_id"] = None
             atomic_json(self.path, state)

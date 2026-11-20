@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import os
 import secrets
 import time
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .client import EasyAPIError, normalize_locale
+from .prompt_tools import prompt_models, transform_prompt, prepare_wan_request, run_wan_request, resolve_prompt_media
 from .protocols import PROTOCOLS
 from .runtime import get_runtime
 
@@ -277,7 +279,68 @@ def build_routes(runtime=None):
         operation = request.query.get("operation")
         rows = await client.discover_models(request.query.get("family"), operation, locale=locale,
                                             refresh=request.query.get("refresh") in {"1", "true"})
-        return web.json_response({"models": rows, "empty": not rows, "authority": "api_key", "operation": operation, "locale": locale})
+        return web.json_response({"models": rows, "empty": not rows, "authority": "api_key", "operation": operation,
+                                  "locale": locale, "cache_ttl": client.model_catalog_cache_seconds(locale)},
+                                 headers={"Cache-Control": "no-store"})
+
+    @routes.get("/easyapi/prompt/models")
+    @_guard
+    async def list_prompt_models(request):
+        locale = normalize_locale(request.query.get("locale"))
+        _, rows = await prompt_models(rt, request.query.get("profile_id"), locale)
+        return web.json_response({"models": rows}, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/easyapi/prompt/transform")
+    @_guard
+    async def edit_prompt(request):
+        require_management(request)
+        value = await request.json()
+        locale = normalize_locale(value.get("locale") if isinstance(value, dict) else None)
+        if isinstance(value, dict) and value.get("action") in {"wan_analyze", "wan_tune"}:
+            client, body = await prepare_wan_request(rt, value, locale)
+            if not body["stream"]:
+                result = await run_wan_request(client, body, locale)
+                return web.json_response(result, headers={"Cache-Control": "no-store"})
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-store",
+                                                   "X-Accel-Buffering": "no"})
+            await response.prepare(request)
+
+            async def emit(event, data):
+                await response.write(("event: " + event + "\ndata: " +
+                                      json.dumps(data, ensure_ascii=False) + "\n\n").encode("utf-8"))
+            try:
+                await emit("stage", {"stage": value["action"]})
+                pending = asyncio.create_task(run_wan_request(client, body, locale, emit=emit))
+                try:
+                    while not pending.done():
+                        if request.transport is None or request.transport.is_closing():
+                            pending.cancel()
+                            raise asyncio.CancelledError()
+                        await asyncio.wait({pending}, timeout=.1)
+                    result = pending.result()
+                finally:
+                    if not pending.done():
+                        pending.cancel()
+                        await asyncio.gather(pending, return_exceptions=True)
+                await emit("result", result)
+            except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+                raise
+            except (EasyAPIError, ValueError) as error:
+                await emit("error", {"message": str(error)})
+            await response.write_eof()
+            return response
+        text = await transform_prompt(rt, value, locale)
+        return web.json_response({"text": text}, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/easyapi/prompt/media")
+    @_guard
+    async def prompt_media(request):
+        require_management(request)
+        value = await request.json()
+        if not isinstance(value, dict):
+            raise ValueError("Media settings must be an object.")
+        rt.client(value.get("profile_id"))
+        return web.json_response(resolve_prompt_media(value, rt.output_dir), headers={"Cache-Control": "no-store"})
 
     @routes.get("/easyapi/schema")
     @_guard
