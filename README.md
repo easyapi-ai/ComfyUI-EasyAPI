@@ -1,5 +1,7 @@
 # ComfyUI-EasyAPI
 
+简体中文 · [English](README.en.md)
+
 在 ComfyUI 中使用 EasyAPI 对话、图片、视频、音频及实时语音。模型列表按当前连接的权限和所选操作筛选，常用参数直接填写，模型专属参数按需显示。
 
 ## 安装
