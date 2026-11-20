@@ -30,5 +30,5 @@ asyncio_default_fixture_loop_scope = "function"
 addopts = "-ra"
 
 [tool.comfy]
-DisplayName = "EasyAPI 创作工具"
+DisplayName = "ComfyUI-EasyAPI"
 Icon = ""

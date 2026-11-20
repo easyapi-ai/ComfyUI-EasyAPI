@@ -30,7 +30,7 @@ def main():
             raise RuntimeError(f'{path}: HTTP {error.code}: {error.read().decode()[:3000]}') from error
     definitions = call('/object_info')
     removed = {'EasyAPIModeration', 'EasyAPISearch', 'EasyAPIRerank', 'EasyAPIEmbedding',
-               'EasyAPINativeRequest', 'EasyAPIMidjourney', 'EasyAPISuno'}
+               'EasyAPINativeRequest', 'EasyAPIMidjourney', 'EasyAPISuno', 'EasyAPITools'}
     if removed.intersection(definitions):
         raise RuntimeError('The running instance still registers removed EasyAPI nodes.')
     profiles = call('/easyapi/profiles')['profiles']
@@ -71,7 +71,6 @@ def main():
         '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/video')},
         '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 2], last_frame=['1', 2], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/frames')},
         '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-transcribe', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
-        '09-image-tool': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPITools', profile_id='mock', operation='tool-remove-background', image=['1', 2]), '3': node('SaveImage', images=['2', 2], filename_prefix='EasyAPI-verify/tool')},
         '10-claude-messages': {'1': creative('EasyAPIChat', 'messages', 'mock-text', params_json='{"max_tokens":16}'), '2': preview('1')},
         '11-video-audio-reference': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video', reference_audio_1=['1', 4], params_json='{"generate_audio":false}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/audio-reference')},
         '12-split-task': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video', wait_for_result=False), '2': node('EasyAPITaskWait', profile_id='mock', task=['1', 6]), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/task-video')},

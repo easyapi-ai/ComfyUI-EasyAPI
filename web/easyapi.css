@@ -85,6 +85,137 @@
 .ea-field-name>label,.ea-inline-field .ea-field-name>label {display:inline;font:inherit}
 .ea-node-panel .ea-field-wide {gap:3px}
 .ea-node-panel .ea-reset {min-height:18px;padding:0 2px;font-size:13px}
+.easyapi-panel input.ea-switch {
+  appearance:none;
+  flex:none;
+  width:34px;
+  height:18px;
+  margin:3px 0 3px auto;
+  padding:2px;
+  display:flex;
+  align-items:center;
+  border:1px solid transparent;
+  border-radius:999px;
+  background:color-mix(in srgb, var(--ea-muted) 38%, var(--ea-bg));
+  cursor:pointer;
+}
+.easyapi-panel input.ea-switch::before {
+  content:"";
+  width:12px;
+  height:12px;
+  border-radius:50%;
+  background:var(--ea-node-widget,var(--ea-input));
+}
+.easyapi-panel input.ea-switch:checked {
+  justify-content:flex-end;
+  background:var(--ea-node-focus,var(--ea-accent));
+}
+.easyapi-panel input.ea-switch[data-unset=true] {
+  border:1px dashed var(--ea-muted);
+  background:transparent;
+}
+.easyapi-panel input.ea-switch:disabled {opacity:.45;cursor:default}
+.ea-stepper {
+  --ea-stepper-height:34px;
+  --ea-stepper-accent:var(--ea-node-focus,var(--ea-accent));
+  --ea-stepper-hover:color-mix(in srgb, var(--ea-stepper-accent) 18%, transparent);
+  display:grid;
+  grid-template-columns:var(--ea-stepper-height) minmax(0,1fr) var(--ea-stepper-height);
+  align-items:stretch;
+  min-width:0;
+  min-height:var(--ea-stepper-height);
+  border:1px solid var(--ea-line);
+  border-radius:6px;
+  background:var(--ea-node-widget,var(--ea-input));
+  font-variant-numeric:tabular-nums;
+}
+.ea-node-panel .ea-stepper {--ea-stepper-height:24px;border:0}
+.ea-stepper.ea-seed {
+  grid-template-columns:var(--ea-stepper-height) minmax(0,1fr) var(--ea-stepper-height) var(--ea-stepper-height);
+}
+.easyapi-panel .ea-stepper > :is(button,input) {
+  margin:0;
+  padding:0;
+  min-height:0;
+  border:0;
+  background:transparent;
+}
+.easyapi-panel .ea-stepper > button {
+  display:grid;
+  place-items:center;
+  line-height:1;
+  color:var(--ea-node-label,var(--ea-muted));
+  font-size:16px;
+}
+.easyapi-panel .ea-stepper > button:enabled:hover {
+  filter:none;
+  color:var(--ea-node-text,var(--ea-fg));
+  background:var(--ea-stepper-hover);
+}
+.easyapi-panel .ea-stepper :focus-visible {outline-offset:-1px}
+.easyapi-panel .ea-stepper > .ea-shuffle {
+  align-self:center;
+  justify-self:center;
+  width:calc(var(--ea-stepper-height) - 4px);
+  height:calc(var(--ea-stepper-height) - 6px);
+  border-radius:999px;
+  color:var(--ea-stepper-accent);
+  background:var(--ea-stepper-hover);
+}
+.easyapi-panel .ea-stepper > .ea-seed-value {
+  appearance:textfield;
+  padding-inline:3px;
+}
+.ea-seed-value::-webkit-inner-spin-button,.ea-seed-value::-webkit-outer-spin-button {appearance:none}
+.ea-duration-track {
+  position:relative;
+  display:grid;
+  align-items:center;
+  min-width:0;
+  background:linear-gradient(to right, var(--ea-stepper-hover) var(--ea-duration-fill,0%), transparent var(--ea-duration-fill,0%));
+}
+.easyapi-panel input.ea-duration-input {
+  appearance:none;
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  min-height:0;
+  margin:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  color:var(--ea-stepper-accent);
+  cursor:ew-resize;
+}
+.ea-duration-input::-webkit-slider-thumb {
+  appearance:none;
+  width:3px;
+  height:12px;
+  border-radius:2px;
+  background:currentColor;
+}
+.ea-duration-input::-moz-range-thumb {
+  width:3px;
+  height:12px;
+  border:0;
+  border-radius:2px;
+  background:currentColor;
+}
+.ea-duration-value {
+  position:relative;
+  padding-inline:6px;
+  color:var(--ea-node-text,var(--ea-fg));
+  pointer-events:none;
+}
+@media (forced-colors:active) {
+  .easyapi-panel input.ea-switch {appearance:auto}
+  .easyapi-panel input.ea-switch::before {content:none}
+  .easyapi-panel .ea-stepper > .ea-shuffle {border:1px solid ButtonText}
+  .ea-duration-input::-webkit-slider-thumb {forced-color-adjust:none;background:Highlight}
+  .ea-duration-input::-moz-range-thumb {forced-color-adjust:none;background:Highlight}
+}
 .ea-help-wrap {display:inline-flex;margin-inline-start:2px;vertical-align:middle;position:relative}
 .easyapi-panel .ea-help {
   display:inline-grid;

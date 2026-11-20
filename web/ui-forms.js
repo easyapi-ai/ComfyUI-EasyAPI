@@ -15,6 +15,33 @@ const optionText = (value) => typeof value === "string" ? value : JSON.stringify
 const initialItem = (definition) => definition.default !== undefined ? clone(definition.default) : ({ object: {}, array: [], boolean: false, integer: 0, number: 0 }[primitiveType(definition)] ?? "");
 let nextFieldId = 0;
 
+function stepButton(text, label, className = "ea-step") {
+  const button = make("button", { type: "button", className, textContent: text, title: label });
+  button.setAttribute("aria-label", label);
+  return button;
+}
+
+function stepper(kind, input, label, t, minimum, maximum, getValue, middle = input) {
+  const minus = stepButton("−", t("decreaseParameter", { name: label }));
+  const plus = stepButton("+", t("increaseParameter", { name: label }));
+  const element = make("div", { className: "ea-stepper ea-" + kind }, minus, middle, plus);
+  const choose = (value) => {
+    input.value = String(Math.min(maximum, Math.max(minimum, value)));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  minus.addEventListener("click", () => choose((getValue() ?? minimum) - 1));
+  plus.addEventListener("click", () => {
+    const value = getValue();
+    choose(value === undefined ? minimum : value + 1);
+  });
+  const sync = () => {
+    const value = getValue();
+    minus.disabled = value === undefined || value <= minimum;
+    plus.disabled = value !== undefined && value >= maximum;
+  };
+  return { element, choose, sync };
+}
+
 export function makeFieldHelp(hint, label) {
   const tip = make("span", { className: "ea-field-help", id: "easyapi-help-" + ++nextFieldId, textContent: hint });
   tip.setAttribute("role", "tooltip");
@@ -112,22 +139,81 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
       if (definition.minItems !== undefined || definition.maxItems !== undefined) wrapper.append(make("small", { className: "ea-caption" }, t("itemLimits", { min: definition.minItems ?? 0, max: definition.maxItems ?? "∞" })));
     } else {
       let input;
+      let control;
+      let syncControl = () => {};
       const hasChoices = Array.isArray(options) || type === "boolean";
       const isJSON = ["object", "array"].includes(type) || definition.oneOf || definition.anyOf || definition.additionalProperties;
       const displayOption = (choice) => typeof choice === "boolean" ? t(choice ? "enabled" : "disabled") : optionText(choice);
-      const inputValue = (value) => value === undefined ? "" : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
-      if (hasChoices) {
+      const supportsSwitch = type === "boolean" && !isJSON && definition.const === undefined &&
+        (!Array.isArray(definition.type) || !definition.type.includes("null")) &&
+        (!Array.isArray(options) || (options.length === 2 && options.includes(true) && options.includes(false)));
+      const canSwitch = (value) => supportsSwitch && (value === undefined || typeof value === "boolean");
+      const isSwitch = canSwitch(current);
+      const isResolution = key === "resolution" && Array.isArray(options) && options.length > 0;
+      const plainInteger = type === "integer" && !hasChoices && !isJSON && definition.const === undefined &&
+        definition.exclusiveMinimum === undefined && definition.exclusiveMaximum === undefined &&
+        (definition.multipleOf === undefined || definition.multipleOf === 1);
+      const minimum = definition.minimum;
+      const maximum = definition.maximum;
+      const withinBounds = (value) => value === undefined || (Number.isSafeInteger(value) && value >= minimum && value <= maximum);
+      const supportsDuration = plainInteger && ["duration", "seconds"].includes(key) &&
+        Number.isSafeInteger(minimum) && Number.isSafeInteger(maximum) && minimum < maximum && withinBounds(definition.default);
+      const canSlide = (value) => supportsDuration && withinBounds(value);
+      const isDuration = canSlide(current);
+      const inputValue = (value) => {
+        if (value === undefined && isResolution && options.includes(definition.default)) value = definition.default;
+        return value === undefined ? "" : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
+      };
+      const effectiveNumber = () => {
+        const value = atPath(getValue(), path);
+        const effective = value === undefined ? definition.default : value;
+        return Number.isSafeInteger(effective) ? effective : undefined;
+      };
+      if (isSwitch) {
+        input = make("input", { type: "checkbox", className: "ea-switch" });
+        input.setAttribute("role", "switch");
+      } else if (hasChoices) {
         const choices = Array.isArray(options) ? options : [true, false];
         const choicesUI = choices.map((choice) => make("option", { value: JSON.stringify(choice) }, displayOption(choice)));
         if (current !== undefined && !choicesUI.some((choice) => choice.value === inputValue(current))) {
-          choicesUI.push(make("option", { value: inputValue(current), disabled: true }, displayOption(current)));
+          choicesUI.push(make("option", { value: inputValue(current), disabled: true, hidden: isResolution }, displayOption(current)));
         }
-        input = make("select", {}, make("option", { value: "" }, t("defaultHint", { value: definition.default !== undefined ? displayOption(definition.default) : "—" })),
-          ...choicesUI);
+        if (!isResolution) choicesUI.unshift(make("option", { value: "" }, t("defaultHint", { value: definition.default !== undefined ? displayOption(definition.default) : "—" })));
+        input = make("select", {}, ...choicesUI);
+      } else if (isDuration) {
+        input = make("input", { type: "range", className: "ea-duration-input", min: String(minimum), max: String(maximum), step: "1" });
+        const output = make("output", { className: "ea-duration-value" });
+        const track = make("div", { className: "ea-duration-track" }, input, output);
+        const steps = stepper("duration", input, label, t, minimum, maximum, effectiveNumber, track);
+        control = steps.element;
+        const paint = (value) => {
+          const fraction = value === undefined ? 0 : (value - minimum) / (maximum - minimum);
+          control.style.setProperty("--ea-duration-fill", `${fraction * 100}%`);
+          output.textContent = value === undefined ? "—" : String(value);
+        };
+        input.addEventListener("input", () => paint(Number(input.value)));
+        syncControl = () => { paint(effectiveNumber()); steps.sync(); };
       } else if (["integer", "number"].includes(type)) {
         input = make("input", { type: "number", placeholder: definition.default !== undefined ? String(definition.default) : t("optionalValue"), step: type === "integer" ? "1" : "any" });
-        if (definition.minimum !== undefined) input.min = definition.minimum;
-        if (definition.maximum !== undefined) input.max = definition.maximum;
+        if (minimum !== undefined) input.min = minimum;
+        if (maximum !== undefined) input.max = maximum;
+        const seedMinimum = minimum ?? 0;
+        const seedMaximum = maximum ?? Math.max(seedMinimum, 2147483647);
+        if (key === "seed" && plainInteger && Number.isSafeInteger(seedMinimum) && Number.isSafeInteger(seedMaximum) && seedMinimum <= seedMaximum) {
+          input.className = "ea-seed-value";
+          const steps = stepper("seed", input, label, t, seedMinimum, maximum ?? Number.MAX_SAFE_INTEGER, effectiveNumber);
+          const shuffle = stepButton("⤨", t("shuffleSeed"), "ea-shuffle");
+          steps.element.insertBefore(shuffle, steps.element.lastElementChild);
+          shuffle.addEventListener("click", () => {
+            // Nonnegative seeds are reproducible on models that reserve a negative value for automatic seeding.
+            const start = seedMaximum >= 0 ? Math.max(seedMinimum, 0) : seedMinimum;
+            let next = start + Math.floor(Math.random() * (seedMaximum - start + 1));
+            if (next === effectiveNumber() && start < seedMaximum) next = next === seedMaximum ? start : next + 1;
+            steps.choose(next);
+          });
+          control = steps.element;
+          syncControl = steps.sync;
+        }
       } else if (isJSON) {
         input = make("textarea", { placeholder: type === "array" ? "[]" : "{}", rows: 3 });
       } else {
@@ -135,15 +221,33 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
           { placeholder: definition.default !== undefined ? String(definition.default) : t("optionalValue") });
       }
       input.id = "easyapi-field-" + ++nextFieldId;
-      input.value = inputValue(current);
+      const refreshInput = () => {
+        const value = atPath(getValue(), path);
+        if (isSwitch) {
+          const effective = value === undefined ? definition.default : value;
+          input.checked = effective === true;
+          input.dataset.unset = String(effective === undefined);
+          input.title = effective === undefined ? t("optionalValue") : "";
+        } else input.value = isDuration ? String(effectiveNumber() ?? minimum) : inputValue(value);
+        syncControl();
+      };
+      refreshInput();
       const controlLabel = make("label", { htmlFor: input.id }, labelText);
       name.replaceChildren(controlLabel, ...(help ? [help.element] : []));
       if (help) input.setAttribute("aria-describedby", help.id);
       input.dataset.path = JSON.stringify(path);
       wrapper.className += input.tagName === "TEXTAREA" ? " ea-field-wide" : " ea-field-inline";
+      const upgradeFallback = () => {
+        const value = atPath(getValue(), path);
+        if ((isSwitch || !canSwitch(value)) && (isDuration || !canSlide(value))) return false;
+        render();
+        [...container.querySelectorAll("[data-path]")].find((field) => field.dataset.path === input.dataset.path)?.focus();
+        return true;
+      };
       reset.addEventListener("click", () => {
         resetValue();
-        input.value = inputValue(atPath(getValue(), path));
+        if (upgradeFallback()) return;
+        refreshInput();
         input.setCustomValidity?.("");
         reset.hidden = true;
         input.focus?.();
@@ -153,7 +257,8 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
           input.setCustomValidity?.("");
           if (input.validity?.badInput) throw new Error(t("invalidNumber"));
           let next = input.value;
-          if (next === "") {
+          if (isSwitch) commit(path, input.checked);
+          else if (next === "") {
             if (isArrayItem) {
               resetValue();
               input.value = inputValue(atPath(getValue(), path));
@@ -166,10 +271,13 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
               next < definition.minimum || next > definition.maximum) throw new Error(input.validationMessage || t("invalidNumber"));
             commit(path, next);
           } else commit(path, next);
+          if (upgradeFallback()) return;
           reset.hidden = !canReset(atPath(getValue(), path));
+          if (isSwitch) refreshInput();
+          else syncControl();
         } catch (error) { reset.hidden = false; input.setCustomValidity?.(error.message); input.reportValidity?.(); }
       });
-      wrapper.append(input);
+      wrapper.append(control || input);
     }
     return wrapper;
   }

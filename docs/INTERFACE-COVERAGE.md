@@ -11,7 +11,6 @@
 | `EasyAPIVideo` | 视频与多种参考素材 | 只提交 `POST /v1/videos` |
 | `EasyAPISpeech` | 语音合成 | `POST /v1/audio/speech` |
 | `EasyAPITranscribe` | 音频转录与翻译 | `POST /v1/audio/transcriptions`、`/v1/audio/translations` |
-| `EasyAPITools` | 平台创作工具 | `/v1/tools/*`；模型由平台配置 |
 | `EasyAPICountTokens` | 消息 Token 计数 | `POST /v1/messages/count_tokens` |
 | `EasyAPIMedia` | 额外素材组与参考角色 | 本地整理；需要 URL 时由相应操作使用素材接口 |
 | `EasyAPIJSON` | JSON 数据工具 | 本地解析与变换 |
@@ -21,7 +20,7 @@
 | `EasyAPIRealtime` | 浏览器实时会话与冻结快照 | `GET /v1/realtime` WebSocket |
 | `EasyAPIPreview` | 混合媒体预览 | 本地预览，不调用生成接口 |
 
-共 14 个注册节点。节点名称及端口翻译跟随 ComfyUI，模型 ID 和操作值保持不变。
+共 13 个注册节点。节点名称及端口翻译跟随 ComfyUI，模型 ID 和操作值保持不变。
 
 ## 对话与图片操作
 
@@ -41,13 +40,11 @@
 
 图片菜单不提供旧 `/v1/edits` 别名，也不把查询混入生成操作；已有任务使用独立任务节点。
 
-## 视频与平台工具
+## 视频
 
 视频节点只有 `video-generation`，统一提交 `/v1/videos`。本地素材使用文件传输或内联，URL 素材使用引用。专用输入为 `first_frame`、`last_frame`、`reference_image_1/2`、`reference_video_1/2`、`reference_audio_1/2`，额外数量通过 `references` 素材组提供。
 
 模式默认 `auto`，由模型能力及已连接素材选择；不暴露原厂路由或旧 `/v1/video/generations` 入口。模式、角色、数量和组合必须符合模型声明，没有明确声明时不能把未知能力描述成已支持。
-
-平台工具操作为 `tool-remove-watermark`、`tool-remove-background`、`tool-upscale`、`tool-image-text`、`tool-motion-video`，分别对应 `/v1/tools/` 下的同名路径。模型来自平台设置，工具节点不提供自由切换模型的控件；是否启用仍由当前网关决定。
 
 ## 连接、模型和表单
 
@@ -67,7 +64,7 @@
 
 ## 移除与排除项
 
-当前**不注册** `EasyAPIModeration`、`EasyAPISearch`、`EasyAPIRerank`、`EasyAPIEmbedding`、`EasyAPINativeRequest`、`EasyAPIMidjourney`、`EasyAPISuno`。旧工作流需替换或移除相应节点，不能通过高级参数继续选择旧操作。Claude Messages 由普通对话节点提供，不需要原生请求节点。
+旧工作流如果引用 `EasyAPITools`、`EasyAPIModeration`、`EasyAPISearch`、`EasyAPIRerank`、`EasyAPIEmbedding`、`EasyAPINativeRequest`、`EasyAPIMidjourney` 或 `EasyAPISuno`，需替换或移除相应节点。已有 `tool-motion-video` 任务可通过任务节点查询和恢复。Claude Messages 由普通对话节点提供。
 
 账户、登录/OAuth、令牌管理、充值支付、团队/BYOK 和后台配置不属于创作节点。网页会话 `/pg/*` 及网页七牛凭证不作为插件 API Key 接口使用。未实现的 Files、Fine-tunes、图片 variations 和 Gemini `:countTokens` 也不列为可用能力。
 

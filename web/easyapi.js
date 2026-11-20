@@ -701,7 +701,7 @@ class NodePanel {
       return;
     }
     if (!this.hasModel) {
-      this.status.textContent = (this.node.comfyClass || this.node.type) === "EasyAPITools" ? t("toolModelManaged") : "";
+      this.status.textContent = "";
       this.clearSchema(); this.syncAdvanced(); return;
     }
     this.modelAbort = new AbortController();

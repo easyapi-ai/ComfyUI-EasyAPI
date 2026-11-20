@@ -19,10 +19,12 @@ class FakeNode {
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(''); }
   set textContent(value) { this.children.forEach((child) => child.parentElement = null); this.children = []; this._text = String(value); }
   get isConnected() { return this.root || Boolean(this.parentElement?.isConnected); }
+  get lastElementChild() { return this.children.at(-1); }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this); this.parentElement = null; }
   addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
   removeEventListener(name, handler) { this.listeners[name] = (this.listeners[name] || []).filter((value) => value !== handler); }
   fire(name, properties = {}) { for (const handler of this.listeners[name] || []) handler({ target: this, key: '', preventDefault() {}, ...properties }); }
+  dispatchEvent(event) { this.fire(event.type, event); }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name]; }
   removeAttribute(name) { delete this.attributes[name]; }
@@ -44,6 +46,12 @@ const fields = { type: 'object', required: ['count'], properties: {
   tags: { type: 'array', items: { type: 'string' }, maxItems: 3 },
   image: { type: 'string' }, input_references: { type: 'array', items: { type: 'string' } }
 } };
+const videoFields = { type: 'object', properties: {
+  resolution: { type: 'string', enum: ['1080P', '720P', '480P'], default: '1080P' },
+  duration: { type: 'integer', minimum: 2, maximum: 30, default: 5 },
+  seed: { type: 'integer', minimum: 0, maximum: 2147483647 },
+  generate_audio: { type: 'boolean', default: true }, watermark: { type: 'boolean', default: false },
+} };
 const fixtures = {
   profiles: [{ id: 'p1', name: 'First', model_catalog_revision: 'rev-1' }, { id: 'p2', name: 'Second', model_catalog_revision: 'rev-2' }],
   models: [{ id: 'saved-model', display_name: 'Saved model', capability_status: 'declared' }, { id: 'other-model', display_name: 'Other model', capability_status: 'unknown' }],
@@ -59,7 +67,7 @@ const api = { async fetchApi(address, options = {}) {
       data = await new Promise((resolve) => { releaseNodeModels = resolve; });
     } else data = { models: fixtures.models, authority: 'api_key' };
   }
-  else if (url.pathname === '/easyapi/schema') data = { request_schema: fields, matched: true, declared: true };
+  else if (url.pathname === '/easyapi/schema') data = { request_schema: url.searchParams.get('operation') === 'video-generation' ? videoFields : fields, matched: true, declared: true };
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
   else if (url.pathname === '/easyapi/prompt/models') data = { models: [{ id: 'prompt-text' }] };
   else if (url.pathname === '/easyapi/prompt/transform') data = { text: 'improved prompt' };
@@ -72,7 +80,7 @@ const api = { async fetchApi(address, options = {}) {
 }, apiURL: (url) => '/api' + url };
 const window = { addEventListener() {}, removeEventListener() {}, dispatchEvent() {}, isSecureContext: true };
 const context = { document, app, api, window, Node: FakeNode, URL, URLSearchParams, Map, Set, JSON, console,
-  AbortController, setTimeout, clearTimeout, requestAnimationFrame: (handler) => setTimeout(handler, 0), Event: class {},
+  AbortController, setTimeout, clearTimeout, requestAnimationFrame: (handler) => setTimeout(handler, 0), Event: class { constructor(type) { this.type = type; } },
   navigator: {}, location: { href: 'https://comfy.test/', protocol: 'https:' },
 };
 vm.createContext(context);
@@ -211,9 +219,9 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const seedHelp = descendants(panel.schema).find((element) => element.id === seed.getAttribute('aria-describedby'));
   assert.equal(seedHelp.textContent, 'Seed used by the model.');
   seed.value = '-1'; seed.fire('change'); assert.ok(seed.validationMessage);
-  const stream = findInput(panel, ['stream']); stream.value = 'false'; stream.fire('change');
+  const stream = findInput(panel, ['stream']); assert.equal(stream.checked, true); stream.checked = false; stream.fire('change');
   assert.equal(JSON.parse(get(node, 'params_json')).seed, 0); assert.equal(JSON.parse(get(node, 'params_json')).stream, false);
-  const nested = findInput(panel, ['settings', 'enabled']); nested.value = 'false'; nested.fire('change');
+  const nested = findInput(panel, ['settings', 'enabled']); nested.checked = false; nested.fire('change');
   assert.equal(JSON.parse(get(node, 'params_json')).settings.enabled, false);
   const add = descendants(panel.schema).find((element) => element.tagName === 'BUTTON' && element.textContent === 'Add item');
   add.fire('click'); const item = findInput(panel, ['tags', 0]); item.value = 'alpha'; item.fire('change');
@@ -243,10 +251,43 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   holdNodeModels = false;
   modelInput.link = null; restored.updateBacking(); await restored.refreshModels();
   assert.equal(restored.picker.input.disabled, false);
-  const videoNode = makeNode('EasyAPIVideo'); videoNode.inputs.push({ name: 'first_frame', link: null }, { name: 'reference_video_1', link: null });
+  const videoNode = makeNode('EasyAPIVideo', { values: { profile_id: 'p2', model: 'saved-model', operation: 'video-generation', prompt: '', params_json: '{}', mode: 'auto' } });
+  videoNode.inputs.push({ name: 'first_frame', link: null }, { name: 'reference_video_1', link: null });
   const video = new h.NodePanel(videoNode); body.append(video.root);
   assert.equal(video.videoBox.hidden, true);
   await tick();
+  const resolution = findInput(video, ['resolution']);
+  assert.deepEqual(resolution.children.map((option) => option.textContent), ['1080P', '720P', '480P']);
+  assert.equal(resolution.value, '"1080P"');
+  const duration = findInput(video, ['duration']);
+  assert.deepEqual([duration.type, duration.min, duration.max, duration.value], ['range', '2', '30', '5']);
+  const audio = findInput(video, ['generate_audio']);
+  assert.equal(audio.getAttribute('role'), 'switch');
+  assert.equal(audio.checked, true);
+  assert.equal(findInput(video, ['watermark']).checked, false);
+  assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), {});
+  resolution.value = '"480P"'; resolution.fire('change');
+  duration.parentElement.parentElement.lastElementChild.fire('click');
+  audio.checked = false; audio.fire('change');
+  const videoSeed = findInput(video, ['seed']); videoSeed.value = '0'; videoSeed.fire('change');
+  assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), { resolution: '480P', duration: 6, generate_audio: false, seed: 0 });
+  videoSeed.parentElement.children.find((element) => element.className === 'ea-shuffle').fire('click');
+  const shuffled = JSON.parse(get(videoNode, 'params_json')).seed;
+  assert.ok(Number.isInteger(shuffled) && shuffled > 0 && shuffled <= 2147483647);
+  for (const input of [resolution, duration, audio, videoSeed]) {
+    input.closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  }
+  assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), {});
+  assert.equal(resolution.value, '"1080P"'); assert.equal(duration.value, '5'); assert.equal(audio.checked, true);
+  video.commitParams({ duration: -1, resolution: 'saved-value', seed: -1 }); video.renderForm();
+  assert.equal(findInput(video, ['duration']).type, 'number');
+  assert.equal(findInput(video, ['duration']).value, -1);
+  assert.equal(findInput(video, ['resolution']).children.filter((option) => !option.hidden).length, 3);
+  assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), { duration: -1, resolution: 'saved-value', seed: -1 });
+  findInput(video, ['duration']).closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  assert.equal(findInput(video, ['duration']).type, 'range');
+  assert.equal(findInput(video, ['duration']).value, '5');
+  assert.equal(JSON.parse(get(videoNode, 'params_json')).duration, undefined);
   video.metadata = { video: { roles: ['first_frame'], scenarios: ['text-to-video', 'image-to-video'], variants: { 'text-to-video': { roles: [] }, 'image-to-video': { roles: ['first_frame'] } } } };
   video.updateVideo();
   const firstIndex = videoNode.inputs.findIndex((input) => input.name === 'first_frame');

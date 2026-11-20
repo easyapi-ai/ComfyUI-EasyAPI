@@ -14,7 +14,6 @@
 | `06-video.json` | 统一视频生成及原生 SaveVideo |
 | `07-video-references.json` | 图片直接连接视频 `first_frame` 与 `last_frame` |
 | `08-speech-transcribe.json` | TTS、原生 AUDIO、兼容转录模型及 SaveAudio |
-| `09-image-tool.json` | 平台去背景工具 |
 | `10-claude-messages.json` | 普通对话节点使用 Claude Messages |
 | `11-video-audio-reference.json` | TTS 的 AUDIO 直接连接视频参考音频端口 |
 | `12-split-task.json` | 提交任务与等待节点分开 |

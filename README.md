@@ -1,4 +1,4 @@
-# EasyAPI 创作工具 · ComfyUI
+# ComfyUI-EasyAPI
 
 在 ComfyUI 中使用 EasyAPI 对话、图片、视频、音频及实时语音。模型列表按当前连接的权限和所选操作筛选，常用参数直接填写，模型专属参数按需显示。
 
@@ -44,7 +44,6 @@
 | EasyAPI 视频 | 使用统一 `/v1/videos` 接口生成视频 |
 | EasyAPI 语音合成 | 文本转原生 AUDIO |
 | EasyAPI 转录与翻译 | 使用兼容模型处理 AUDIO 或带音轨的 VIDEO |
-| EasyAPI 创作工具 | 平台启用的去背景、去水印、超分、图片文字和动作视频工具；使用平台配置的模型 |
 | EasyAPI Token 计数 | 对兼容消息请求计数 |
 | EasyAPI 素材与参考组 | 组合额外素材、已有 URL 与参考角色 |
 | EasyAPI JSON 工具 | 解析、读取、合并、设置、追加及格式化 JSON |
@@ -53,7 +52,7 @@
 | EasyAPI 实时对话 | 浏览器麦克风或文字会话，冻结后供工作流读取 |
 | EasyAPI 预览 | 预览文本、JSON、图片、音频、视频及素材组 |
 
-共 14 个注册节点。当前不注册 Moderation、Search、Rerank、Embedding、NativeRequest、Midjourney、Suno 七个旧节点，旧工作流中的这些节点需要重建。高级参数是当前操作的参数 JSON，不是任意接口代理；仓库保留的内部协议适配不表示旧节点仍可使用。
+共 13 个注册节点。旧工作流如果使用了 `EasyAPITools`、Moderation、Search、Rerank、Embedding、NativeRequest、Midjourney 或 Suno，需要替换或删除相应节点。高级参数只接受当前操作的参数 JSON。
 
 ## 表单与语言
 

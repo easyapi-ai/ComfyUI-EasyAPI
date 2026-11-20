@@ -476,7 +476,6 @@ class OperationNode(io.ComfyNode):
     NODE_ID = "EasyAPIOperation"
     DISPLAY = "EasyAPI 创作"
     OPS = ()
-    CHOOSES_MODEL = True
 
     @classmethod
     def define_schema(cls):
@@ -491,8 +490,6 @@ class OperationNode(io.ComfyNode):
                   io.Image.Input("image", optional=True), io.Mask.Input("mask", optional=True),
                   io.Audio.Input("audio", optional=True), io.Video.Input("video", optional=True),
                   MEDIA.Input("references", optional=True)]
-        if not cls.CHOOSES_MODEL:
-            inputs = [entry for entry in inputs if entry.id != "model"]
         return io.Schema(node_id=cls.NODE_ID, display_name=cls.DISPLAY, category="EasyAPI/创作",
                          inputs=inputs, outputs=output_schema(), not_idempotent=True,
                          description="调用 EasyAPI 创作接口。异步任务可恢复，模型与高级参数在运行时刷新。")
@@ -509,7 +506,7 @@ class OperationNode(io.ComfyNode):
         params = parse_object(params_json)
         if operation not in cls.OPS:
             raise ValueError(f"Operation is not supported by this node: {operation}.")
-        if cls.CHOOSES_MODEL and not model:
+        if not model:
             raise ValueError("Select an EasyAPI model before running this node.")
         protocol = get_protocol(operation)
         runtime = get_runtime()
@@ -539,10 +536,10 @@ class OperationNode(io.ComfyNode):
         return _pack(decoded, handle)
 
 
-def _operation_class(name, display, ops, *, chooses_model=True):
+def _operation_class(name, display, ops):
     return type(name, (OperationNode,), {
         "NODE_ID": name, "DISPLAY": display, "OPS": tuple(ops),
-        "CHOOSES_MODEL": chooses_model, "__module__": __name__,
+        "__module__": __name__,
     })
 
 
@@ -550,7 +547,6 @@ EasyAPIChat = _operation_class("EasyAPIChat", "EasyAPI 对话与多模态", ["ch
 EasyAPIImages = _operation_class("EasyAPIImages", "EasyAPI 图片生成与编辑", ["image-generation", "image-edit", "image-task", "image-task-edit"])
 EasyAPISpeech = _operation_class("EasyAPISpeech", "EasyAPI 语音合成", ["audio-speech"])
 EasyAPITranscribe = _operation_class("EasyAPITranscribe", "EasyAPI 转写与翻译", ["audio-transcriptions", "audio-translations"])
-EasyAPITools = _operation_class("EasyAPITools", "EasyAPI 快捷创作工具", [p["id"] for p in PROTOCOLS if p["id"].startswith("tool-")], chooses_model=False)
 EasyAPICountTokens = _operation_class("EasyAPICountTokens", "EasyAPI Token 计数", ["messages-count-tokens"])
 
 
@@ -836,6 +832,6 @@ class EasyAPIPreview(io.ComfyNode):
 
 
 NODE_CLASSES = [EasyAPIChat, EasyAPIImages, EasyAPIVideo, EasyAPISpeech, EasyAPITranscribe,
-                EasyAPITools, EasyAPICountTokens,
+                EasyAPICountTokens,
                 EasyAPIMedia, EasyAPIJSON, EasyAPITaskQuery, EasyAPITaskWait,
                 EasyAPIResultDownload, EasyAPIRealtime, EasyAPIPreview]

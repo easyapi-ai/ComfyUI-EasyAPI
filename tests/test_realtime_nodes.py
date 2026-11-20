@@ -137,10 +137,10 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hidden_nodes_are_not_registered_and_video_uses_one_operation(self):
         registered = {cls.define_schema().node_id for cls in self.nodes.NODE_CLASSES}
-        self.assertEqual(len(registered), 14)
+        self.assertEqual(len(registered), 13)
         self.assertFalse(registered & {"EasyAPIModeration", "EasyAPISearch", "EasyAPIRerank",
                                        "EasyAPIEmbedding", "EasyAPINativeRequest",
-                                       "EasyAPIMidjourney", "EasyAPISuno"})
+                                       "EasyAPIMidjourney", "EasyAPISuno", "EasyAPITools"})
         schema = self.nodes.EasyAPIVideo.define_schema()
         operations = next(i.options for i in schema.inputs if i.id == "operation")
         self.assertEqual(operations, ["video-generation"])
