@@ -141,15 +141,17 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
       let input;
       let control;
       let syncControl = () => {};
-      const hasChoices = Array.isArray(options) || type === "boolean";
+      const choices = Array.isArray(options) ? options : type === "boolean" ? [true, false] : null;
+      const hasChoices = choices !== null;
       const isJSON = ["object", "array"].includes(type) || definition.oneOf || definition.anyOf || definition.additionalProperties;
       const displayOption = (choice) => typeof choice === "boolean" ? t(choice ? "enabled" : "disabled") : optionText(choice);
+      const declaredDefault = JSON.stringify(definition.default);
+      const defaultChoice = choices?.some((choice) => JSON.stringify(choice) === declaredDefault) ? declaredDefault : "";
       const supportsSwitch = type === "boolean" && !isJSON && definition.const === undefined &&
         (!Array.isArray(definition.type) || !definition.type.includes("null")) &&
         (!Array.isArray(options) || (options.length === 2 && options.includes(true) && options.includes(false)));
       const canSwitch = (value) => supportsSwitch && (value === undefined || typeof value === "boolean");
       const isSwitch = canSwitch(current);
-      const isResolution = key === "resolution" && Array.isArray(options) && options.length > 0;
       const plainInteger = type === "integer" && !hasChoices && !isJSON && definition.const === undefined &&
         definition.exclusiveMinimum === undefined && definition.exclusiveMaximum === undefined &&
         (definition.multipleOf === undefined || definition.multipleOf === 1);
@@ -160,10 +162,7 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         Number.isSafeInteger(minimum) && Number.isSafeInteger(maximum) && minimum < maximum && withinBounds(definition.default);
       const canSlide = (value) => supportsDuration && withinBounds(value);
       const isDuration = canSlide(current);
-      const inputValue = (value) => {
-        if (value === undefined && isResolution && options.includes(definition.default)) value = definition.default;
-        return value === undefined ? "" : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
-      };
+      const inputValue = (value) => value === undefined ? defaultChoice : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
       const effectiveNumber = () => {
         const value = atPath(getValue(), path);
         const effective = value === undefined ? definition.default : value;
@@ -173,12 +172,10 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         input = make("input", { type: "checkbox", className: "ea-switch" });
         input.setAttribute("role", "switch");
       } else if (hasChoices) {
-        const choices = Array.isArray(options) ? options : [true, false];
         const choicesUI = choices.map((choice) => make("option", { value: JSON.stringify(choice) }, displayOption(choice)));
         if (current !== undefined && !choicesUI.some((choice) => choice.value === inputValue(current))) {
-          choicesUI.push(make("option", { value: inputValue(current), disabled: true, hidden: isResolution }, displayOption(current)));
+          choicesUI.push(make("option", { value: inputValue(current), disabled: true, hidden: true }, displayOption(current)));
         }
-        if (!isResolution) choicesUI.unshift(make("option", { value: "" }, t("defaultHint", { value: definition.default !== undefined ? displayOption(definition.default) : "—" })));
         input = make("select", {}, ...choicesUI);
       } else if (isDuration) {
         input = make("input", { type: "range", className: "ea-duration-input", min: String(minimum), max: String(maximum), step: "1" });

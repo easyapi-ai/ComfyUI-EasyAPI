@@ -48,10 +48,16 @@ const fields = { type: 'object', required: ['count'], properties: {
 } };
 const videoFields = { type: 'object', properties: {
   resolution: { type: 'string', enum: ['1080P', '720P', '480P'], default: '1080P' },
+  aspect_ratio: { type: 'string', enum: ['adaptive', '16:9', '9:16'], default: 'adaptive' },
   duration: { type: 'integer', minimum: 2, maximum: 30, default: 5 },
   seed: { type: 'integer', minimum: 0, maximum: 2147483647 },
   generate_audio: { type: 'boolean', default: true }, watermark: { type: 'boolean', default: false },
 } };
+const speechFields = { type: 'object', required: ['voice'], properties: {
+  voice: { type: 'string', enum: ['longanlingxin', 'longanlufeng'], default: 'longanlingxin' },
+  response_format: { type: 'string', enum: ['mp3', 'wav'] },
+} };
+const schemasByOperation = { 'video-generation': videoFields, 'audio-speech': speechFields };
 const fixtures = {
   profiles: [{ id: 'p1', name: 'First', model_catalog_revision: 'rev-1' }, { id: 'p2', name: 'Second', model_catalog_revision: 'rev-2' }],
   models: [{ id: 'saved-model', display_name: 'Saved model', capability_status: 'declared' }, { id: 'other-model', display_name: 'Other model', capability_status: 'unknown' }],
@@ -67,7 +73,7 @@ const api = { async fetchApi(address, options = {}) {
       data = await new Promise((resolve) => { releaseNodeModels = resolve; });
     } else data = { models: fixtures.models, authority: 'api_key' };
   }
-  else if (url.pathname === '/easyapi/schema') data = { request_schema: url.searchParams.get('operation') === 'video-generation' ? videoFields : fields, matched: true, declared: true };
+  else if (url.pathname === '/easyapi/schema') data = { request_schema: schemasByOperation[url.searchParams.get('operation')] || fields, matched: true, declared: true };
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
   else if (url.pathname === '/easyapi/prompt/models') data = { models: [{ id: 'prompt-text' }] };
   else if (url.pathname === '/easyapi/prompt/transform') data = { text: 'improved prompt' };
@@ -259,12 +265,20 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const resolution = findInput(video, ['resolution']);
   assert.deepEqual(resolution.children.map((option) => option.textContent), ['1080P', '720P', '480P']);
   assert.equal(resolution.value, '"1080P"');
+  const aspectRatio = findInput(video, ['aspect_ratio']);
+  assert.deepEqual(aspectRatio.children.map((option) => option.textContent), ['adaptive', '16:9', '9:16']);
+  assert.equal(aspectRatio.value, '"adaptive"');
   const duration = findInput(video, ['duration']);
   assert.deepEqual([duration.type, duration.min, duration.max, duration.value], ['range', '2', '30', '5']);
   const audio = findInput(video, ['generate_audio']);
   assert.equal(audio.getAttribute('role'), 'switch');
   assert.equal(audio.checked, true);
   assert.equal(findInput(video, ['watermark']).checked, false);
+  assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), {});
+  aspectRatio.value = '"16:9"'; aspectRatio.fire('change');
+  assert.equal(JSON.parse(get(videoNode, 'params_json')).aspect_ratio, '16:9');
+  aspectRatio.closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  assert.equal(aspectRatio.value, '"adaptive"');
   assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), {});
   resolution.value = '"480P"'; resolution.fire('change');
   duration.parentElement.parentElement.lastElementChild.fire('click');
@@ -298,6 +312,23 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   assert.ok(video.videoError.textContent.includes('Connections have been preserved'));
   assert.ok(video.videoCSS.includes('outline:')); assert.ok(!video.videoCSS.includes('display:none'));
   assert.equal(videoNode.inputs[referenceIndex].link, 8);
+  const speechNode = makeNode('EasyAPISpeech', { values: { profile_id: 'p2', model: 'saved-model', operation: 'audio-speech', prompt: '', params_json: '{}' } });
+  const speech = new h.NodePanel(speechNode); body.append(speech.root); await tick();
+  const voice = findInput(speech, ['voice']);
+  assert.deepEqual(voice.children.map((option) => option.textContent), ['longanlingxin', 'longanlufeng']);
+  assert.equal(voice.value, '"longanlingxin"');
+  const format = findInput(speech, ['response_format']);
+  assert.deepEqual(format.children.map((option) => option.textContent), ['mp3', 'wav']);
+  assert.equal(format.value, '');
+  assert.deepEqual(JSON.parse(get(speechNode, 'params_json')), { voice: 'longanlingxin' });
+  voice.value = '"longanlufeng"'; voice.fire('change');
+  format.value = '"mp3"'; format.fire('change');
+  assert.deepEqual(JSON.parse(get(speechNode, 'params_json')), { voice: 'longanlufeng', response_format: 'mp3' });
+  voice.closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  format.closest('.ea-form-field').children[0].lastElementChild.fire('click');
+  assert.equal(voice.value, '"longanlingxin"'); assert.equal(format.value, '');
+  assert.deepEqual(JSON.parse(get(speechNode, 'params_json')), { voice: 'longanlingxin' });
+  speech.dispose();
   const unknown = h.videoPortState(videoNode.inputs, { roles: [], scenarios: [], variants: {} }); assert.equal(unknown.known, false);
   const textOnly = h.videoPortState(videoNode.inputs, { roles: [], scenarios: ['text-to-video'], variants: {} }); assert.equal(textOnly.invalid.length, 1);
   locale = 'zh'; assert.equal(h.t('model'), '模型'); await restored.refreshModels();
