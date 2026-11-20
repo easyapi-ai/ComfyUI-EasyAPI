@@ -21,7 +21,17 @@ function publicProfile(value) {
     credential_expires_at: value.credential_expires_at || null, read_only: Boolean(value.read_only),
     connection_status: ["ok", "error", "untested"].includes(value.connection_status) ? value.connection_status : "untested",
     last_checked_at: value.last_checked_at || null,
+    model_catalog_revision: String(value.model_catalog_revision || ""),
   };
+}
+function formatBalanceAmount(entry) {
+  if (!Number.isFinite(entry?.amount) || typeof entry.currency !== "string" || !entry.currency.trim()) return null;
+  const currency = entry.currency.trim();
+  const options = { maximumFractionDigits: 6 };
+  if (/^[A-Z]{3}$/.test(currency)) {
+    return new Intl.NumberFormat(hostLocale(), { ...options, style: "currency", currency, currencyDisplay: "code" }).format(entry.amount);
+  }
+  return `${new Intl.NumberFormat(hostLocale(), options).format(entry.amount)} ${currency}`;
 }
 export function credentialHint(profile) {
   const hint = String(profile.key_hint || "");
@@ -53,6 +63,8 @@ export class ProfileManager {
     this.defaultButton = this.action("setDefaultConnection", () => this.setDefault());
     this.testButton = this.action("testConnection", () => this.test());
     this.testHint = element("small", { className: "ea-caption" });
+    this.balanceButton = this.action("checkBalance", () => this.checkBalance());
+    this.balanceStatus = element("div", { className: "ea-caption ea-balance-status", role: "status" });
     this.authorizeButton = this.action("authorizeOfficial", () => this.startAuthorization());
     this.authNotice = this.label("p", "authorizationNotice", { className: "ea-caption" });
     this.authStatus = element("div", { className: "ea-status", role: "status" });
@@ -67,7 +79,8 @@ export class ProfileManager {
     this.form.append(this.summary, this.field("显示名称", this.name), this.field("连接别名", this.id), this.field("服务地址", this.base),
       this.field("API 密钥", this.key), element("label", { className: "ea-checkbox" }, this.makeDefault, this.label("span", "makeDefault")),
       element("div", { className: "ea-row" }, this.saveButton, this.defaultButton, this.deleteButton),
-      element("div", { className: "ea-connection-test" }, this.testButton, this.testHint), authorization);
+      element("div", { className: "ea-connection-test" },
+        element("div", { className: "ea-row" }, this.testButton, this.balanceButton), this.testHint, this.balanceStatus), authorization);
     this.connectionView = element("div", { className: "ea-manager-view" }, this.label("p", "managerDescription", { className: "ea-caption" }), this.profileList,
       this.action("newConnection", () => this.newProfile()), this.notice, this.form);
     this.presetPanel = createPresets?.();
@@ -78,7 +91,9 @@ export class ProfileManager {
       this.tabs = element("div", { className: "ea-manager-tabs", role: "tablist" }, this.connectionTab, this.presetsTab);
       this.root.insertBefore(this.tabs, this.connectionView); this.root.append(this.presetPanel.root); this.showSection("connections");
     }
-    for (const input of [this.id, this.name, this.base, this.key]) input.addEventListener("input", () => { this.dirty = true; this.editorTouched = true; this.updateDisabled(); });
+    for (const input of [this.id, this.name, this.base, this.key]) input.addEventListener("input", () => {
+      this.dirty = true; this.editorTouched = true; this.clearBalance(); this.updateDisabled();
+    });
     this.newProfile();
   }
   label(tag, key, props = {}) {
@@ -136,6 +151,7 @@ export class ProfileManager {
   }
   newProfile() {
     if (this.flow?.status === "pending") { this.notice.textContent = t("finishAuthorization"); return; }
+    this.clearBalance();
     this.selectedId = null; this.id.readOnly = false;
     let alias = "easyapi", count = 2; while (this.profiles.some((profile) => profile.id === alias)) alias = "easyapi-" + count++;
     this.id.value = alias; this.name.value = "EasyAPI"; this.base.value = OFFICIAL_GATEWAY; this.key.value = "";
@@ -145,6 +161,9 @@ export class ProfileManager {
   select(profileId) {
     if (this.flow?.status === "pending" && profileId !== this.flow.profileId) { this.notice.textContent = t("finishAuthorization"); return; }
     const profile = this.profiles.find((value) => value.id === profileId); if (!profile) { this.requestedId = profileId; return; }
+    if (this.balance && (this.balance.profileId !== profile.id || this.balance.revision !== profile.model_catalog_revision || this.dirty)) {
+      this.clearBalance();
+    }
     this.selectedId = profile.id; this.id.value = profile.id; this.id.readOnly = true;
     this.name.value = profile.name; this.base.value = profile.base_url; this.key.value = "";
     this.makeDefault.checked = profile.id === this.defaultId; this.dirty = false;
@@ -161,6 +180,7 @@ export class ProfileManager {
     this.saveButton.disabled = readOnly || pending; this.deleteButton.disabled = !profile || readOnly || pending;
     this.defaultButton.disabled = !profile || profile.id === this.defaultId || pending;
     this.testButton.disabled = !profile || this.dirty || this.testing || pending;
+    this.balanceButton.disabled = !profile?.has_key || this.dirty || Boolean(this.balance?.pending || this.savingConnection || this.removingConnection || pending);
     this.testHint.textContent = readOnly ? t("environmentConnection") : this.dirty ? t("saveBeforeTest") : t("testReadOnly");
     const official = this.base.value.replace(/\/+$/, "") === OFFICIAL_GATEWAY;
     const secure = window.isSecureContext;
@@ -177,18 +197,26 @@ export class ProfileManager {
     }
     const id = this.id.value.trim();
     this.saveButton.disabled = true;
+    this.savingConnection = true;
+    this.clearBalance();
+    this.balanceButton.disabled = true;
     try {
       await this.mutation(`/easyapi/profiles/${encodeURIComponent(id)}`, { name: this.name.value.trim(), base_url: this.base.value.trim(), api_key: this.key.value, make_default: this.makeDefault.checked });
       this.key.value = "";
       if (!this.makeDefault.checked && this.defaultId === id) await this.mutation("/easyapi/default-profile", { profile_id: null });
       this.dirty = false; await this.refresh(id); this.notice.className = "ea-manager-notice"; this.notice.textContent = t("连接已保存。密钥仅保存在 ComfyUI 后端。");
       await this.onChanged(id);
-    } finally { this.key.value = ""; this.updateDisabled(); }
+    } finally { this.savingConnection = false; this.key.value = ""; this.updateDisabled(); }
   }
   async remove() {
     const profile = this.selected(); if (!profile || profile.read_only || this.deleteButton.disabled) return;
-    await this.mutation(`/easyapi/profiles/${encodeURIComponent(profile.id)}`, undefined, "DELETE");
-    this.dirty = false; this.selectedId = null; await this.refresh(); this.newProfile(); await this.onChanged(profile.id);
+    this.removingConnection = true;
+    this.clearBalance();
+    this.balanceButton.disabled = true;
+    try {
+      await this.mutation(`/easyapi/profiles/${encodeURIComponent(profile.id)}`, undefined, "DELETE");
+      this.dirty = false; this.selectedId = null; await this.refresh(); this.newProfile(); await this.onChanged(profile.id);
+    } finally { this.removingConnection = false; this.updateDisabled(); }
   }
   async setDefault() {
     const profile = this.selected(); if (!profile) return;
@@ -207,12 +235,62 @@ export class ProfileManager {
       await this.refresh(profile.id); throw error;
     } finally { this.testing = false; this.updateDisabled(); }
   }
+  clearBalance() {
+    if (!this.balance) return;
+    this.balance.controller.abort();
+    this.balance = null;
+    this.renderBalance();
+  }
+  renderBalance() {
+    const query = this.balance;
+    if (!query || query.pending) {
+      this.balanceStatus.textContent = query ? t("checkingBalance") : "";
+      return;
+    }
+    const { wallet, token, budget } = query.result || {};
+    const lines = [];
+    const walletAmount = formatBalanceAmount(wallet);
+    const keyAmount = formatBalanceAmount(token);
+    const budgetAmount = formatBalanceAmount(budget);
+    if (walletAmount) lines.push(t("walletBalance", { amount: walletAmount }));
+    if (token?.unlimited === true) lines.push(t("unlimitedKeyBalance"));
+    else if (keyAmount) lines.push(t("keyBalance", { amount: keyAmount }));
+    if (budgetAmount) {
+      const period = String(budget.period);
+      const label = ["daily", "1"].includes(period) ? "dailyBudgetBalance" : ["monthly", "2"].includes(period) ? "monthlyBudgetBalance" : "budgetBalance";
+      lines.push(t(label, { amount: budgetAmount }));
+    }
+    if (lines.length) this.balanceStatus.replaceChildren(...lines.map((line) => element("div", {}, line)));
+    else this.balanceStatus.textContent = t("balanceUnavailable");
+  }
+  async checkBalance() {
+    if (this.balanceButton.disabled) return;
+    const profile = this.selected();
+    if (!profile) return;
+    const query = { profileId: profile.id, revision: profile.model_catalog_revision, controller: new AbortController(), pending: true, result: null };
+    this.balance = query;
+    const isCurrent = () => {
+      const selected = this.selected();
+      return this.balance === query && !this.dirty && selected?.id === query.profileId && selected.model_catalog_revision === query.revision;
+    };
+    this.renderBalance(); this.updateDisabled();
+    try {
+      const nonce = await this.bootstrap();
+      if (!isCurrent()) return;
+      query.result = await this.request(`/easyapi/profiles/${encodeURIComponent(profile.id)}/balance`, {
+        method: "GET", headers: { "X-EasyAPI-Management": nonce }, cache: "no-store", signal: query.controller.signal,
+      });
+    } catch { query.result = null; }
+    finally {
+      if (isCurrent()) { query.pending = false; this.renderBalance(); this.updateDisabled(); }
+    }
+  }
   async startAuthorization() {
     if (this.authorizeButton.disabled) return;
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.id.value.trim())) throw new Error(t("invalidConnectionFields"));
     const version = ++this.flowVersion;
     const payload = { profile_id: this.id.value.trim(), name: this.name.value.trim(), make_default: this.makeDefault.checked };
-    this.authorizing = true; this.key.value = ""; this.authStatus.textContent = t("authorizationStarting"); this.updateDisabled();
+    this.authorizing = true; this.clearBalance(); this.key.value = ""; this.authStatus.textContent = t("authorizationStarting"); this.updateDisabled();
     let result;
     try { result = await this.mutation("/easyapi/auth/start", payload); }
     finally { this.authorizing = false; this.updateDisabled(); }
@@ -260,9 +338,9 @@ export class ProfileManager {
   }
   translate() {
     for (const entry of this.labels) entry.node.textContent = t(entry.key);
-    this.renderProfiles(); this.updateDisabled();
+    this.renderProfiles(); this.renderBalance(); this.updateDisabled();
     if (this.flow) this.authStatus.textContent = t(this.flow.status === "pending" ? "authorizationPending" : "authorization." + this.flow.status);
     this.presetPanel?.translate();
   }
-  destroy() { clearTimeout(this.pollTimer); ++this.flowVersion; this.key.value = ""; this.presetPanel?.destroy(); this.root.remove(); }
+  destroy() { clearTimeout(this.pollTimer); ++this.flowVersion; this.clearBalance(); this.key.value = ""; this.presetPanel?.destroy(); this.root.remove(); }
 }

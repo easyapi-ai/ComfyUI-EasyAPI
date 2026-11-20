@@ -190,6 +190,51 @@ Object.assign(zhTW, {
   wanIncompleteDiagnosis: "模型沒有回傳完整診斷，請重新調優。",
   wanAnalysisLimit: "本次包含前 24 張分析畫面，其餘素材尚未驗證。",
 });
+Object.assign(en, {
+  checkBalance: "Check balance", checkingBalance: "Checking balance…", balanceUnavailable: "Balance unavailable",
+  walletBalance: "Wallet balance · {amount}", keyBalance: "API key balance · {amount}", unlimitedKeyBalance: "API key quota is unlimited",
+  dailyBudgetBalance: "Daily budget remaining · {amount}", monthlyBudgetBalance: "Monthly budget remaining · {amount}", budgetBalance: "Budget remaining · {amount}",
+  billingEstimate: "Estimated cost", billingDetails: "View model pricing and discounts", billingChecking: "Estimating…",
+  billingEstimateNote: "Estimate for the current inputs. The gateway settles the final cost using actual usage.",
+  billingMissingUsage: "Set the duration, size, or output token limit where applicable. Some connected values are known only at run time.",
+  billingUnknownUsage: "Estimated cost depends on usage during this operation.", billingModelUnavailable: "This connection has no pricing for the selected model.",
+  billingQuoteUnavailable: "This gateway could not provide an estimate for the current settings.", billingOriginal: "Before discount",
+  billingCatalogRates: "Model catalog rates include the catalog discount.",
+  billingDiscount: "Discount", billingDiscountValue: "{discount} off", billingNoDiscount: "None", billingOffer: "Offer", billingOfferEnd: "Offer ends",
+  billingInputTokens: "Input / 1M tokens", billingOutputTokens: "Output / 1M tokens", billingCacheRead: "Cache read / 1M tokens",
+  billingCacheWrite: "Cache write / 1M tokens", billingPerRequest: "Per request", billingPerSecond: "Per second",
+  billingImageInput: "Image input / 1M tokens", billingAudioInput: "Audio input / 1M tokens", billingAudioOutput: "Audio output / 1M tokens",
+});
+Object.assign(zh, {
+  checkBalance: "查询余额", checkingBalance: "正在查询余额…", balanceUnavailable: "暂无法获取余额",
+  walletBalance: "钱包余额 · {amount}", keyBalance: "API 密钥剩余额度 · {amount}", unlimitedKeyBalance: "API 密钥额度不限",
+  dailyBudgetBalance: "今日预算剩余 · {amount}", monthlyBudgetBalance: "本月预算剩余 · {amount}", budgetBalance: "预算剩余 · {amount}",
+  billingEstimate: "预计费用", billingDetails: "查看模型定价和折扣", billingChecking: "正在估算…",
+  billingEstimateNote: "按当前参数估算，最终费用按网关实际用量结算。",
+  billingMissingUsage: "请检查时长、尺寸或输出 Token 上限。部分连线数据在运行时才能确定。",
+  billingUnknownUsage: "此操作的费用取决于运行时用量。", billingModelUnavailable: "当前连接没有该模型的定价。",
+  billingQuoteUnavailable: "当前网关暂无法为这些参数提供预估。", billingOriginal: "折扣前预计费用",
+  billingCatalogRates: "模型目录单价已含目录折扣。",
+  billingDiscount: "折扣", billingDiscountValue: "减免 {discount}", billingNoDiscount: "无", billingOffer: "优惠活动", billingOfferEnd: "优惠结束时间",
+  billingInputTokens: "输入 / 百万 Token", billingOutputTokens: "输出 / 百万 Token", billingCacheRead: "缓存读取 / 百万 Token",
+  billingCacheWrite: "缓存写入 / 百万 Token", billingPerRequest: "每次调用", billingPerSecond: "每秒",
+  billingImageInput: "图片输入 / 百万 Token", billingAudioInput: "音频输入 / 百万 Token", billingAudioOutput: "音频输出 / 百万 Token",
+});
+Object.assign(zhTW, {
+  checkBalance: "查詢餘額", checkingBalance: "正在查詢餘額…", balanceUnavailable: "暫時無法取得餘額",
+  walletBalance: "錢包餘額 · {amount}", keyBalance: "API 金鑰剩餘額度 · {amount}", unlimitedKeyBalance: "API 金鑰額度不限",
+  dailyBudgetBalance: "本日預算剩餘 · {amount}", monthlyBudgetBalance: "本月預算剩餘 · {amount}", budgetBalance: "預算剩餘 · {amount}",
+  billingEstimate: "預估費用", billingDetails: "查看模型定價與折扣", billingChecking: "正在估算…",
+  billingEstimateNote: "依目前參數估算，最終費用由閘道依實際用量結算。",
+  billingMissingUsage: "請檢查時長、尺寸或輸出 Token 上限。部分連線資料在執行時才能確定。",
+  billingUnknownUsage: "此操作的費用取決於執行時用量。", billingModelUnavailable: "目前連線沒有此模型的定價。",
+  billingQuoteUnavailable: "目前閘道暫時無法為這些參數提供預估。", billingOriginal: "折扣前預估費用",
+  billingCatalogRates: "模型目錄單價已含目錄折扣。",
+  billingDiscount: "折扣", billingDiscountValue: "減免 {discount}", billingNoDiscount: "無", billingOffer: "優惠活動", billingOfferEnd: "優惠結束時間",
+  billingInputTokens: "輸入 / 百萬 Token", billingOutputTokens: "輸出 / 百萬 Token", billingCacheRead: "快取讀取 / 百萬 Token",
+  billingCacheWrite: "快取寫入 / 百萬 Token", billingPerRequest: "每次呼叫", billingPerSecond: "每秒",
+  billingImageInput: "圖片輸入 / 百萬 Token", billingAudioInput: "音訊輸入 / 百萬 Token", billingAudioOutput: "音訊輸出 / 百萬 Token",
+});
 export function hostLocale() { return app.extensionManager?.setting?.get("Comfy.Locale") || "en"; }
 export function localeQuery() { return hostLocale(); }
 export function textKey(text) {

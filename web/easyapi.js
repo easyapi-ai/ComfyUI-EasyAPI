@@ -7,6 +7,7 @@ import { ProfileManager, EASYAPI_SIDEBAR_ID } from "./profile-panel.js";
 import { PresetPanel } from "./preset-panel.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { createModelCatalog } from "./model-catalog.js";
+import { estimateFacts, NodeBilling } from "./node-billing.js";
 
 const sheet = document.createElement("link");
 sheet.rel = "stylesheet";
@@ -20,7 +21,7 @@ const portRules = new Map();
 const portSheet = document.createElement("style");
 portSheet.dataset.easyapiPortVisibility = "true";
 document.head.append(portSheet);
-let nonce = "";
+let bootstrapPending;
 // Nodes 2.0 forwards wheel events to the graph during capture, before the form can scroll.
 window.addEventListener("wheel", (event) => {
   if (event.ctrlKey || event.metaKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
@@ -101,9 +102,17 @@ function nodeProfiles() {
 }
 async function bootstrap() {
   // The backend may have restarted while the workflow and this module stayed open.
-  nonce = (await jsonRequest("/easyapi/bootstrap", { method: "POST" })).management_nonce;
-  if (!nonce) throw new Error(t("未获取连接管理凭据，请刷新页面"));
-  return nonce;
+  bootstrapPending ??= jsonRequest("/easyapi/bootstrap", { method: "POST" }).then(({ management_nonce }) => {
+    if (!management_nonce) throw new Error(t("未获取连接管理凭据，请刷新页面"));
+    return management_nonce;
+  }).finally(() => { bootstrapPending = undefined; });
+  return bootstrapPending;
+}
+async function requestEstimate(payload, signal) {
+  const management = await bootstrap();
+  signal.throwIfAborted();
+  return jsonRequest("/easyapi/billing/estimate", { method: "POST", signal,
+    headers: { "X-EasyAPI-Management": management, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
 }
 async function promptModels(profileId, signal) {
   const query = new URLSearchParams({ profile_id: profileId, locale: localeQuery() });
@@ -310,7 +319,7 @@ function getProfileManager() {
 function registerManagerSidebar() {
   if (managerSidebarRegistered || !app.extensionManager?.registerSidebarTab) return;
   app.extensionManager.registerSidebarTab({
-    id: EASYAPI_SIDEBAR_ID, icon: "icon-[lucide--settings]", title: "EasyAPI", tooltip: t("managerTitle"), type: "custom",
+    id: EASYAPI_SIDEBAR_ID, icon: "easyapi-sidebar-icon", title: "EasyAPI", tooltip: t("managerTitle"), type: "custom",
     render: (container) => {
       const manager = getProfileManager(); container.replaceChildren(manager.root); manager.refresh();
     },
@@ -485,7 +494,12 @@ class NodePanel {
     if (this.isVideo) this.createVideoControls();
     if (widget(node, "task_id")) this.addTaskSelector();
     this.paramsHint = el("div", { class: "ea-caption", hidden: true }, t("linkedInput"));
-    this.content.append(this.schema, this.paramsHint); this.createAdvanced();
+    this.content.append(this.schema, this.paramsHint);
+    if (this.hasModel) {
+      this.billing = new NodeBilling({ request: requestEstimate, t, locale: hostLocale, resize: () => this.resize() });
+      this.content.append(this.billing.root);
+    }
+    this.createAdvanced();
     if ((node.comfyClass || node.type) === "EasyAPIRealtime") {
       this.realtime = new RealtimePanel(this); this.content.append(this.realtime.root);
     } else this.content.append(this.preview);
@@ -541,6 +555,7 @@ class NodePanel {
   }
   clearSchema() {
     this.schemaAbort?.abort(); ++this.schemaSequence; this.metadata = null; this.formSchema = null;
+    this.billing?.update(null);
     this.schema.replaceChildren();
     if (this.isVideo) this.updateVideo();
   }
@@ -559,6 +574,7 @@ class NodePanel {
       onInput: (prompt) => {
         this.write("prompt", prompt);
         this.node.graph?.change?.();
+        this.refreshBilling();
       },
       getContext: () => this.promptContext(),
       loadModels: promptModels, transform: transformPrompt, resolveMedia: resolvePromptMedia,
@@ -623,6 +639,7 @@ class NodePanel {
     if (this.advanced) this.advanced.hidden = paramsDriven;
     if (this.presetControls) this.presetControls.hidden = this.modelDriven || paramsDriven;
     this.writePortCSS();
+    this.refreshBilling();
   }
   writePortCSS() { portRules.set(this, (this.backingCSS || "") + "\n" + (this.videoCSS || "")); portSheet.textContent = [...portRules.values()].join("\n"); }
   chooseProfile(id) {
@@ -660,6 +677,7 @@ class NodePanel {
     if (this.metadata?.matched !== false && this.metadata?.declared !== false && this.formSchema) safe = requiredDefaults(this.formSchema, safe);
     this.write(this.targetField, JSON.stringify(safe, null, 2)); this.persistCurrent(); this.syncAdvanced(); this.node.graph?.change?.();
     this.promptEditor?.contextChanged();
+    this.refreshBilling();
   }
   async refreshProfiles() {
     const sequence = ++this.profileSequence;
@@ -758,6 +776,20 @@ class NodePanel {
   renderForm() {
     if (!widget(this.node, this.targetField) || !this.formSchema || this.modelDriven) return;
     renderSchemaForm(this.schema, this.formSchema, () => this.params(), (next) => { this.autoPresetCandidate = false; this.commitParams(next); }, t, () => this.resize());
+    this.refreshBilling();
+  }
+  refreshBilling() {
+    if (!this.billing) return;
+    const profileId = String(value(this.node, "profile_id"));
+    const model = String(value(this.node, "model"));
+    const profile = this.profiles?.find((profile) => (profile.id || profile.profile_id) === profileId);
+    if (!profile || !model || !this.formSchema || this.modelDriven) { this.billing.update(null); return; }
+    const paramsLinked = this.connected(this.targetField);
+    let params = {};
+    try { if (!paramsLinked) params = this.params(); } catch { this.billing.update(null); return; }
+    const facts = estimateFacts({ model, operation: this.operationId(), params, schema: this.formSchema,
+      inputs: this.node.inputs || [], prompt: this.connected("prompt") ? undefined : widget(this.node, "prompt")?.value, paramsLinked });
+    this.billing.update({ profile_id: profileId, locale: localeQuery(), facts, rates_only: paramsLinked }, profile.model_catalog_revision);
   }
   operationId() { return String(value(this.node, "operation", (this.node.comfyClass || this.node.type) === "EasyAPIRealtime" ? "realtime" : "")); }
   createPresetControls() {
@@ -883,7 +915,7 @@ class NodePanel {
     this.picker.translate();
     this.promptEditor?.translate(); this.jsonEditor?.setAttribute("aria-label", t("advancedJson"));
     this.modeSelect?.setAttribute("aria-label", t("videoMode"));
-    this.realtime?.translate?.(); this.refreshProfiles();
+    this.realtime?.translate?.(); this.billing?.render(); this.refreshProfiles();
   }
   minHeight() { return Math.min(this.content.offsetHeight || 160, this.maxPanelHeight); }
   resize() {
@@ -902,6 +934,7 @@ class NodePanel {
   dispose() {
     this.disposed = true; this.modelAbort?.abort(); this.schemaAbort?.abort(); clearTimeout(this.connectionTimer);
     this.contentObserver?.disconnect();
+    this.billing?.dispose();
     this.promptEditor?.dispose();
     this.realtime?.dispose(); panels.delete(this); portRules.delete(this); portSheet.textContent = [...portRules.values()].join("\n"); this.root.remove();
   }

@@ -658,6 +658,11 @@ class EasyAPIClient:
             return scoped
         return await self._share_catalog_load(scope_key, False, self._fetch_allowed_models(locale))
 
+    async def model_billing_row(self, model, locale):
+        _, rows = await self._allowed_models(normalize_locale(locale), False)
+        row = next((row for row in rows if row["id"] == model), None)
+        return copy.deepcopy(row)
+
     async def _fetch_allowed_models(self, locale):
         # Public metadata may enrich the authenticated catalogue. It cannot supply permission.
         try:

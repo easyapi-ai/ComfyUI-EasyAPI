@@ -87,6 +87,93 @@ class ProfileCredentialsTests(unittest.TestCase):
 
 
 class ConnectionTestRoute(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_gateway_preserves_key_quota_without_inventing_wallet_or_currency(self):
+        from easyapi_comfy.billing import connection_balance
+        from easyapi_comfy.client import EasyAPIClient
+
+        async def usage(request):
+            self.assertEqual(request.headers.get("Authorization"), "Bearer sk-legacy-billing-fixture")
+            return web.json_response({"code": True, "data": {"total_available": 0, "unlimited_quota": False,
+                "budget_quota": 50, "budget_used": 60, "budget_period": 1}})
+
+        app = web.Application()
+        app.router.add_get("/usage/token", usage)
+        async with TestServer(app) as gateway:
+            client = EasyAPIClient(str(gateway.make_url("/")).rstrip("/"), "sk-legacy-billing-fixture")
+            try:
+                self.assertEqual(await connection_balance(client), {
+                    "token": {"amount": 0, "currency": "quota", "unlimited": False},
+                    "budget": {"amount": 0, "currency": "quota", "period": 1},
+                })
+            finally:
+                await client.close()
+
+    async def test_billing_queries_use_saved_connection_and_only_forward_metering_facts(self):
+        key = "sk-private-billing-test-token"
+        calls = []
+
+        async def gateway(request):
+            self.assertEqual(request.headers.get("Authorization"), f"Bearer {key}")
+            calls.append((request.method, request.path))
+            if request.path == "/v1/billing/balance":
+                return web.json_response({"success": True, "data": {"wallet": {"amount": 0, "currency": "CNY"},
+                    "token": {"amount": 9, "currency": "CNY", "unlimited": True},
+                    "budget": {"amount": 2, "currency": "CNY", "period": "daily"}}})
+            if request.path == "/v1/models":
+                return web.json_response({"data": [{"id": "video", "pricing": {"second": "0.25", "discount": 0.5},
+                                                    "billing": {"mode": "second"}}]})
+            self.assertEqual(request.path, "/v1/billing/estimate")
+            facts = await request.json()
+            seconds = facts.pop("duration")
+            self.assertEqual(facts, {"model": "video", "operation": "video-generation", "resolution": "720P",
+                "generate_audio": False, "input_image_count": 0})
+            if seconds == -1:
+                return web.json_response({"success": True, "data": {"reason": "missing_usage"}})
+            self.assertEqual(seconds, 5)
+            return web.json_response({"success": True, "data": {"amount": 1.25, "currency": "CNY", "original_amount": 2.5, "discount": 0.5}})
+
+        upstream = web.Application()
+        upstream.router.add_get("/v1/billing/balance", gateway)
+        upstream.router.add_get("/v1/models", gateway)
+        upstream.router.add_post("/v1/billing/estimate", gateway)
+        async with TestServer(upstream) as gateway_server:
+            with tempfile.TemporaryDirectory() as directory:
+                runtime = Runtime(directory)
+                runtime.profiles.save("test", str(gateway_server.make_url("/")).rstrip("/"), key)
+                app = web.Application()
+                app.add_routes(build_routes(runtime))
+                async with TestClient(TestServer(app)) as browser:
+                    balance_path = "/easyapi/profiles/test/balance"
+                    self.assertEqual((await browser.get(balance_path)).status, 403)
+                    self.assertEqual(calls, [])
+                    headers = {"Origin": str(browser.make_url("/")).rstrip("/")}
+                    session = await (await browser.get("/easyapi/bootstrap", headers=headers)).json()
+                    headers["X-EasyAPI-Management"] = session["management_nonce"]
+                    response = await browser.get(balance_path, headers=headers)
+                    self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+                    balance = await response.json()
+                    self.assertEqual(balance, {"wallet": {"amount": 0, "currency": "CNY"}, "token": {"unlimited": True},
+                        "budget": {"amount": 2, "currency": "CNY", "period": "daily"}})
+                    body = {"profile_id": "test", "facts": {
+                        "model": "video", "operation": "video-generation", "duration": 5, "resolution": "720P",
+                        "generate_audio": False, "input_image_count": 0, "prompt": "private", "video_url": "https://private.invalid/"}}
+                    response = await browser.post("/easyapi/billing/estimate", headers=headers, json=body)
+                    quote = await response.json()
+                    self.assertEqual(quote["estimate"], {"amount": 1.25, "currency": "CNY", "original_amount": 2.5, "discount": 0.5})
+                    self.assertEqual(quote["pricing"]["discount"], 0.5)
+                    self.assertEqual(quote["pricing"]["rates"], {"second": 0.25})
+                    self.assertNotIn(key, json.dumps({"quote": quote, "balance": balance}))
+                    body["facts"]["duration"] = -1
+                    response = await browser.post("/easyapi/billing/estimate", headers=headers, json=body)
+                    smart = await response.json()
+                    self.assertEqual(smart["reason"], "missing_usage")
+                    self.assertNotIn("estimate", smart)
+                    response = await browser.post("/easyapi/billing/estimate", headers=headers, json={**body, "rates_only": True})
+                    self.assertEqual(await response.json(), smart)
+                await runtime.close()
+        self.assertEqual(calls, [("GET", "/v1/billing/balance"), ("GET", "/v1/models"),
+                                 ("POST", "/v1/billing/estimate"), ("POST", "/v1/billing/estimate")])
+
     async def test_abandoned_throttled_authorization_clears_account_credential_at_deadline(self):
         async def gateway(method, url, **kwargs):
             if url.endswith("/cli/session"):

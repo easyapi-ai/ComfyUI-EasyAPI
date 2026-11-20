@@ -29,6 +29,8 @@ Open **EasyAPI** from the left sidebar or the extension menu. With one connectio
 
 **Test saved connection** checks model access. The ComfyUI backend stores and uses the token obtained through website authorization.
 
+Select a saved connection and choose **Check balance** to view its wallet balance, API key quota, and configured budget. Older gateways that expose only key quota show it in the original quota unit.
+
 ### Creative presets
 
 Save named presets by connection, operation, and model. An operation's default preset supplies the model and parameters for new nodes. Existing workflows open with their saved models and values. From a node, you can apply a preset or save the current model and parameters as a new preset.
@@ -59,6 +61,8 @@ The extension registers 13 nodes. If an older workflow uses `EasyAPITools`, Mode
 ## Forms and languages
 
 The node form shows a prompt and common settings, with dynamic parameters drawn from the selected model's schema. **Advanced JSON** starts collapsed and preserves values such as `0`, `false`, arrays, and objects. Both views edit the same parameters. Available inputs depend on the combination of connection, model, and operation.
+
+**Estimated cost** queries the selected EasyAPI gateway using the current parameters. Expand it to see model catalog rates and discounts. Wallet balances and per-run estimates require the corresponding gateway billing endpoints. The final cost follows the actual usage recorded by the gateway.
 
 Node names, ports, and controls follow ComfyUI's language setting. The extension provides node definitions in English (`en`), Simplified Chinese (`zh`), and Traditional Chinese (`zh-TW`). Model IDs, operation values, reference roles, and JSON keys are the same across languages.
 

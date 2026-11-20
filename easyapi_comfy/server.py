@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+from .billing import connection_balance, model_estimate
 from .client import EasyAPIError, normalize_locale
 from .prompt_tools import prompt_models, transform_prompt, prepare_wan_request, run_wan_request, resolve_prompt_media
 from .protocols import PROTOCOLS
@@ -216,6 +217,30 @@ def build_routes(runtime=None):
         rt.profiles.record_check(profile, True, checked_at)
         return web.json_response({"ok": True, "checked_at": checked_at, "model_count": len(data["data"]),
                                   "profile": rt.profiles.public_status(profile)})
+
+    @routes.get("/easyapi/profiles/{profile_id}/balance")
+    @_guard
+    async def balance(request):
+        require_management(request)
+        try:
+            result = await connection_balance(rt.client(request.match_info["profile_id"]))
+        except TimeoutError as error:
+            raise EasyAPIError("Balance query timed out", status=504) from error
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/easyapi/billing/estimate")
+    @_guard
+    async def estimate(request):
+        require_management(request)
+        value = await request.json()
+        if not isinstance(value, dict) or not isinstance(value.get("profile_id"), str) or not value["profile_id"]:
+            raise ValueError("A saved connection is required for a billing estimate")
+        try:
+            result = await model_estimate(rt.client(value["profile_id"]), value.get("facts"), value.get("locale"),
+                                          rates_only=value.get("rates_only") is True)
+        except TimeoutError as error:
+            raise EasyAPIError("Billing estimate timed out", status=504) from error
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     @routes.get("/easyapi/presets")
     @_guard

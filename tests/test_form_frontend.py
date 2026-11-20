@@ -20,6 +20,7 @@ class FakeNode {
   set textContent(value) { this.children.forEach((child) => child.parentElement = null); this.children = []; this._text = String(value); }
   get isConnected() { return this.root || Boolean(this.parentElement?.isConnected); }
   get lastElementChild() { return this.children.at(-1); }
+  get firstElementChild() { return this.children[0]; }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this); this.parentElement = null; }
   addEventListener(name, handler) { (this.listeners[name] ??= []).push(handler); }
   removeEventListener(name, handler) { this.listeners[name] = (this.listeners[name] || []).filter((value) => value !== handler); }
@@ -81,6 +82,11 @@ const api = { async fetchApi(address, options = {}) {
     data = { request_schema: schema, matched: true, declared: true };
   }
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
+  else if (url.pathname === '/easyapi/billing/estimate') {
+    const { facts } = JSON.parse(options.body);
+    data = { pricing: { mode: 'second', currency: 'USD', rates: { second: 0.1 }, discount: 0.5 },
+      ...(facts.duration ? { estimate: { amount: facts.duration / 10, currency: 'USD' } } : { reason: 'missing_usage' }) };
+  }
   else if (url.pathname === '/easyapi/prompt/models') data = { models: [{ id: 'prompt-text' }] };
   else if (url.pathname === '/easyapi/prompt/transform') data = { text: 'improved prompt' };
   else if (url.pathname === '/easyapi/tasks') data = { tasks: [] };
@@ -96,7 +102,7 @@ const context = { document, app, api, window, Node: FakeNode, URL, URLSearchPara
   navigator: {}, location: { href: 'https://comfy.test/', protocol: 'https:' },
 };
 vm.createContext(context);
-for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'model-catalog.js', 'easyapi.js']) {
+for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'model-catalog.js', 'node-billing.js', 'easyapi.js']) {
   const filename = path.join(process.argv[2], file);
   const original = fs.readFileSync(filename, 'utf8');
   const names = [...original.matchAll(/^export (?:const|function|class) (\w+)/gm)].map((match) => match[1]);
@@ -117,6 +123,18 @@ function makeNode(type = 'EasyAPIImages', stored = null) {
 const get = (node, name) => node.widgets.find((widget) => widget.name === name).value;
 const findInput = (panel, pathValue) => descendants(panel.schema).find((element) => element.dataset.path === json(pathValue));
 (async () => {
+  const quoteDuration = (params, inputs = [], paramsLinked = false) => JSON.parse(JSON.stringify(context.estimateFacts({
+    model: 'seedance-2.5', operation: 'video-generation', params, inputs, paramsLinked, schema: { properties: { duration: { default: 5 } } },
+  })));
+  const smartQuote = quoteDuration({ duration: -1, input_reference: 'https://fixture.invalid/first.png' });
+  assert.equal(smartQuote.duration, -1);
+  assert.equal(smartQuote.has_image_input, true);
+  assert.equal(smartQuote.input_image_count, 1);
+  const linkedQuote = quoteDuration({ input_references: [{ type: 'video', url: 'https://fixture.invalid/video.mp4' }] }, [{ name: 'first_frame', link: 1 }]);
+  assert.equal(linkedQuote.has_video_input, false);
+  assert.equal(linkedQuote.has_image_input, true);
+  assert.equal(linkedQuote.input_image_count, undefined);
+  assert.deepEqual(quoteDuration({ duration: 4 }, [], true), { model: 'seedance-2.5', operation: 'video-generation' });
   const chosen = [], picker = new h.ModelPicker((id) => chosen.push(id));
   const pickerPanel = new FakeNode('section'); pickerPanel.className = 'ea-node-panel'; pickerPanel.append(picker.root);
   pickerPanel.clientTop = 0; pickerPanel.clientHeight = 220;
@@ -291,6 +309,15 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   audio.checked = false; audio.fire('change');
   const videoSeed = findInput(video, ['seed']); videoSeed.value = '0'; videoSeed.fire('change');
   assert.deepEqual(JSON.parse(get(videoNode, 'params_json')), { resolution: '480P', duration: 6, generate_audio: false, seed: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  const quote = requests.filter((entry) => entry.address === '/easyapi/billing/estimate').findLast((entry) =>
+    JSON.parse(entry.options.body).facts.operation === 'video-generation');
+  const { facts: quoted } = JSON.parse(quote.options.body);
+  assert.equal(quote.options.headers['X-EasyAPI-Management'], 'mock-nonce');
+  assert.equal(quoted.generate_audio, false); assert.equal(quoted.duration, 6); assert.equal(quoted.resolution, '480P');
+  assert.equal(quoted.prompt, undefined); assert.equal(quoted.seed, undefined);
+  assert.match(video.billing.total.textContent, /0\.60/);
+  assert.match(video.billing.details.textContent, /50% off/);
   videoSeed.parentElement.children.find((element) => element.className === 'ea-shuffle').fire('click');
   const shuffled = JSON.parse(get(videoNode, 'params_json')).seed;
   assert.ok(Number.isInteger(shuffled) && shuffled > 0 && shuffled <= 2147483647);
@@ -441,10 +468,15 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
     { id: 'manual', name: 'Manual', base_url: h.OFFICIAL_GATEWAY, has_key: true, key_hint: '••••4321', api_key: 'server-must-not-return-this-key', auth_method: 'manual', connection_status: 'untested' },
     { id: 'easyapi-env', name: 'Environment', base_url: h.OFFICIAL_GATEWAY, has_key: true, key_hint: '••••9999', auth_method: 'environment', read_only: true }
   ];
+  let delayedBalance;
   const managerRequest = async (address, options = {}) => {
     managerCalls.push({ address, options });
     if (address === '/easyapi/profiles') return { profiles: publicRows, default_profile_id: 'manual' };
     if (address.endsWith('/test')) return { ok: true, model_count: 3, checked_at: 42 };
+    if (address.endsWith('/balance')) {
+      if (delayedBalance) return new Promise((resolve) => { delayedBalance.resolve = resolve; });
+      return { wallet: { amount: 0, currency: 'CNY' }, token: { unlimited: true }, budget: { period: 'daily', amount: 2, currency: 'CNY' } };
+    }
     if (address === '/easyapi/auth/start') return authStartStatus === 'failed' ? { status: 'failed', message: 'Gateway auth configuration is unavailable' } : { flow_id: 'opaque-flow', status: 'pending', expires_in: 300, retry_after: 1, authorize_url: 'https://www.easyapi.com/cli/authorize?session=opaque' };
     if (address.endsWith('/poll')) {
       if (++pollCount === 1) return { status: 'pending', retry_after: 1 };
@@ -471,6 +503,17 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const probe = managerCalls.find((entry) => entry.address.endsWith('/test'));
   assert.equal(probe.options.method, 'POST'); assert.equal(probe.options.headers['X-EasyAPI-Management'], 'mock-management-nonce');
   assert.ok(manager.notice.textContent.includes('3 permitted models'));
+  await manager.checkBalance();
+  const balanceCall = managerCalls.find((entry) => entry.address === '/easyapi/profiles/manual/balance');
+  assert.equal(balanceCall.options.method, 'GET');
+  assert.equal(balanceCall.options.headers['X-EasyAPI-Management'], 'mock-management-nonce');
+  assert.match(manager.balanceStatus.textContent, /Wallet balance.*0\.00/);
+  assert.match(manager.balanceStatus.textContent, /API key quota is unlimited/);
+  assert.match(manager.balanceStatus.textContent, /Daily budget remaining.*2\.00/);
+  delayedBalance = {};
+  const oldBalance = manager.checkBalance(); await tick();
+  manager.select('easyapi-env'); delayedBalance.resolve({ wallet: { amount: 99, currency: 'USD' } }); await oldBalance;
+  assert.equal(manager.balanceStatus.textContent, '');
   manager.select('easyapi-env'); assert.equal(manager.saveButton.disabled, true); assert.equal(manager.deleteButton.disabled, true); assert.equal(manager.key.readOnly, true);
   window.isSecureContext = false;
   manager.newProfile();
