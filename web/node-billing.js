@@ -3,10 +3,12 @@ const RATE_LABEL = {
   prompt: "billingInputTokens", completion: "billingOutputTokens", input_cache_read: "billingCacheRead",
   input_cache_write: "billingCacheWrite", request: "billingPerRequest", second: "billingPerSecond",
   image: "billingImageInput", audio: "billingAudioInput", audio_completion: "billingAudioOutput",
+  image_input: "billingInputImage", image_output: "billingOutputImage", image_output_2k: "billingOutputImage2K",
 };
 const TOKEN_RATES = new Set(["prompt", "completion", "input_cache_read", "input_cache_write", "image", "audio", "audio_completion"]);
 const TEXT_OPERATIONS = new Set(["chat", "responses", "responses-compact", "messages", "completions", "gemini-generate", "gemini-stream"]);
 const REASONS = { missing_usage: "billingMissingUsage", unsupported_operation: "billingUnknownUsage", model_unavailable: "billingModelUnavailable" };
+let nextPopoverId = 0;
 
 function element(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -78,28 +80,76 @@ export function estimateFacts({ model, operation, params, schema, inputs, prompt
 }
 
 export class NodeBilling {
-  constructor({ request, t, locale, resize }) {
-    Object.assign(this, { request, t, locale, resize });
+  constructor({ request, t, locale }) {
+    Object.assign(this, { request, t, locale });
     this.id = "";
-    this.label = element("span");
     this.total = element("span", { className: "ea-billing-value", role: "status" });
-    this.details = element("div", { className: "ea-billing-details" });
-    this.root = element("details", { className: "ea-node-billing", hidden: true },
-      element("summary", {}, this.label, this.total), this.details);
-    this.root.addEventListener("toggle", () => {
-      if (this.root.open && this.query && !this.loading && Date.now() - this.loadedAt >= 30_000) {
-        this.update(this.query, this.revision, true);
-      }
-      resize();
-    });
-    this.root.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && this.root.open) {
-        this.root.open = false;
-        this.root.firstElementChild.focus();
-        event.stopPropagation();
-      }
-    });
+    const icon = element("span", { className: "ea-billing-icon", textContent: "ⓘ" });
+    icon.setAttribute("aria-hidden", "true");
+    this.trigger = element("button", { type: "button", className: "ea-billing-trigger" }, icon, this.total);
+    this.details = element("section", { id: `easyapi-price-${++nextPopoverId}`, className: "easyapi-panel ea-billing-details", hidden: true });
+    this.root = element("div", { className: "ea-node-billing", hidden: true }, this.trigger, this.details);
+    this.trigger.setAttribute("aria-controls", this.details.id);
+    this.trigger.setAttribute("aria-expanded", "false");
+    this.trigger.addEventListener("click", () => this.open ? this.close() : this.show());
+    this.nativePopover = typeof this.details.showPopover === "function";
+    if (this.nativePopover) {
+      this.details.setAttribute("popover", "auto");
+      this.details.addEventListener("toggle", (event) => {
+        if (event.newState === "closed" && !this.details.matches(":popover-open")) this.close();
+      });
+    }
+    this.closeFromOutside = (event) => {
+      if (!this.trigger.contains(event.target) && !this.details.contains(event.target)) this.close();
+    };
+    this.closeFromKeyboard = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.close();
+      this.trigger.focus();
+    };
+    this.reposition = () => this.position();
     this.render();
+  }
+
+  show() {
+    if (this.query && !this.loading && Date.now() - this.loadedAt >= 30_000) this.update(this.query, this.revision, true);
+    this.open = true;
+    this.trigger.setAttribute("aria-expanded", "true");
+    this.details.hidden = false;
+    if (this.nativePopover) this.details.showPopover();
+    else document.body.append(this.details);
+    window.addEventListener("resize", this.reposition);
+    window.addEventListener("scroll", this.reposition, true);
+    document.addEventListener("pointerdown", this.closeFromOutside, true);
+    document.addEventListener("keydown", this.closeFromKeyboard, true);
+    this.position();
+  }
+
+  position() {
+    const anchor = this.trigger.getBoundingClientRect();
+    const gap = 8;
+    this.details.style.left = `${Math.max(gap, Math.min(anchor.left, window.innerWidth - this.details.offsetWidth - gap))}px`;
+    const below = window.innerHeight - anchor.bottom - 2 * gap;
+    const above = anchor.top - 2 * gap;
+    const aboveAnchor = below < this.details.offsetHeight && above > below;
+    this.details.style.top = aboveAnchor ? "auto" : `${anchor.bottom + gap}px`;
+    this.details.style.bottom = aboveAnchor ? `${window.innerHeight - anchor.top + gap}px` : "auto";
+    this.details.style.maxHeight = `${Math.max(gap, aboveAnchor ? above : below)}px`;
+  }
+
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    window.removeEventListener("resize", this.reposition);
+    window.removeEventListener("scroll", this.reposition, true);
+    document.removeEventListener("pointerdown", this.closeFromOutside, true);
+    document.removeEventListener("keydown", this.closeFromKeyboard, true);
+    this.trigger.setAttribute("aria-expanded", "false");
+    if (this.nativePopover && this.details.matches(":popover-open")) this.details.hidePopover();
+    if (!this.nativePopover) this.root.append(this.details);
+    this.details.hidden = true;
   }
 
   update(query, revision = "", force = false) {
@@ -115,7 +165,7 @@ export class NodeBilling {
     this.loading = Boolean(id);
     this.render();
     if (query) this.timer = setTimeout(() => this.load(query, id), 280);
-    else this.root.open = false;
+    else this.close();
   }
 
   async load(query, id) {
@@ -139,15 +189,16 @@ export class NodeBilling {
     const locale = this.locale();
     const { estimate, pricing, reason } = this.result || {};
     const format = (amount, currency) => money(amount, currency, locale);
-    this.label.textContent = this.t("billingEstimate");
-    this.total.textContent = this.loading ? this.t("billingChecking") : estimate ? `≈ ${format(estimate.amount, estimate.currency)}` : "—";
-    this.root.firstElementChild?.setAttribute("title", this.t("billingDetails"));
+    this.total.textContent = estimate ? `≈ ${format(estimate.amount, estimate.currency)}` : "";
+    this.trigger.title = this.t("billingDetails");
+    this.trigger.setAttribute("aria-label", this.total.textContent ? `${this.t("billingEstimate")} ${this.total.textContent}` : this.t("billingDetails"));
     const rows = [];
     const add = (label, value) => rows.push(element("dt", { textContent: this.t(label) }), element("dd", { textContent: value }));
     if (estimate && number(estimate.original_amount) && estimate.original_amount > estimate.amount) {
       add("billingOriginal", format(estimate.original_amount, estimate.currency));
     }
     if (pricing) {
+      if (pricing.mode === "dynamic") add("billingMode", this.t(pricing.currency === "CNY" ? "billingDynamicCNY" : "billingDynamicUSD"));
       for (const [key, value] of Object.entries(pricing.rates || {})) {
         if (Object.hasOwn(RATE_LABEL, key) && number(value)) add(RATE_LABEL[key], format(value * (TOKEN_RATES.has(key) ? 1_000_000 : 1), pricing.currency));
       }
@@ -157,16 +208,22 @@ export class NodeBilling {
     const discount = estimate?.discount ?? pricing?.discount;
     if (number(discount)) {
       const saving = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 2 }).format(1 - discount);
-      add("billingDiscount", discount < 1 ? this.t("billingDiscountValue", { discount: saving }) : this.t("billingNoDiscount"));
+      const source = pricing?.basis === "public_catalog" && (estimate?.discount === undefined || estimate.basis === "public_catalog")
+        ? "billingPublicDiscount" : "billingDiscount";
+      add(source, discount < 1 ? this.t("billingDiscountValue", { discount: saving }) : this.t("billingNoDiscount"));
     }
-    this.details.replaceChildren(element("p", { className: "ea-caption", textContent: this.loading ? this.t("billingChecking") :
-      estimate ? this.t("billingEstimateNote") : this.t(REASONS[reason] || "billingQuoteUnavailable") }));
+    const note = estimate?.basis === "public_catalog" ? "billingPublicEstimateNote" :
+      estimate?.basis === "authenticated_catalog" ? "billingCatalogEstimateNote" : "billingEstimateNote";
+    const description = this.loading ? this.t("billingChecking") : estimate ? this.t(note) : this.t(REASONS[reason] || "billingQuoteUnavailable");
+    const heading = `${this.t("billingEstimate")}${this.total.textContent ? " " + this.total.textContent : ""}`;
+    this.details.replaceChildren(element("strong", { textContent: heading }),
+      element("p", { className: "ea-caption", textContent: description }));
     if (pricing && Object.keys(pricing.rates || {}).length) {
-      this.details.append(element("p", { className: "ea-caption", textContent: this.t("billingCatalogRates") }));
+      this.details.append(element("p", { className: "ea-caption", textContent: this.t(pricing.basis === "public_catalog" ? "billingPublicRates" : "billingCatalogRates") }));
     }
     if (rows.length) this.details.append(element("dl", {}, ...rows));
-    if (this.root.open) this.resize();
+    if (this.open) this.position();
   }
 
-  dispose() { clearTimeout(this.timer); this.pending?.abort(); }
+  dispose() { clearTimeout(this.timer); this.pending?.abort(); this.close(); }
 }

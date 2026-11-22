@@ -465,7 +465,7 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   // Saved keys never reappear in the central connection manager.
   locale = 'en'; const managerCalls = [], opened = []; let pollCount = 0, authStartStatus = 'pending';
   const publicRows = [
-    { id: 'manual', name: 'Manual', base_url: h.OFFICIAL_GATEWAY, has_key: true, key_hint: '••••4321', api_key: 'server-must-not-return-this-key', auth_method: 'manual', connection_status: 'untested' },
+    { id: 'manual', name: 'Manual', base_url: h.OFFICIAL_GATEWAY, has_key: true, key_hint: '••••4321', api_key: 'server-must-not-return-this-key', auth_method: 'manual', connection_status: 'untested', model_catalog_revision: 'old' },
     { id: 'easyapi-env', name: 'Environment', base_url: h.OFFICIAL_GATEWAY, has_key: true, key_hint: '••••9999', auth_method: 'environment', read_only: true }
   ];
   let delayedBalance;
@@ -474,8 +474,12 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
     if (address === '/easyapi/profiles') return { profiles: publicRows, default_profile_id: 'manual' };
     if (address.endsWith('/test')) return { ok: true, model_count: 3, checked_at: 42 };
     if (address.endsWith('/balance')) {
-      if (delayedBalance) return new Promise((resolve) => { delayedBalance.resolve = resolve; });
-      return { wallet: { amount: 0, currency: 'CNY' }, token: { unlimited: true }, budget: { period: 'daily', amount: 2, currency: 'CNY' } };
+      if (delayedBalance?.capture && address.includes('/manual/')) {
+        delayedBalance.capture = false;
+        return new Promise((resolve) => { delayedBalance.resolve = resolve; });
+      }
+      if (address.includes('/easyapi-env/')) return { token: { unlimited: false, amount: 4, currency: 'CNY', total_granted: 5, total_used: 1 } };
+      return { wallet: { amount: 0, currency: 'CNY' }, token: { unlimited: true, currency: 'CNY', total_granted: 7, total_used: 7 }, budget: { period: 'daily', amount: 2, currency: 'CNY' } };
     }
     if (address === '/easyapi/auth/start') return authStartStatus === 'failed' ? { status: 'failed', message: 'Gateway auth configuration is unavailable' } : { flow_id: 'opaque-flow', status: 'pending', expires_in: 300, retry_after: 1, authorize_url: 'https://www.easyapi.com/cli/authorize?session=opaque' };
     if (address.endsWith('/poll')) {
@@ -495,7 +499,7 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   assert.ok(!authorization.open && authorization.contains(manager.authorizeButton));
   assert.equal(manager.authorizeButton.classList.contains('ea-primary'), false);
   assert.equal(manager.key.placeholder, '');
-  await manager.refresh(); manager.select('manual');
+  await manager.refresh(); await tick(); manager.select('manual');
   assert.equal(manager.key.value, ''); assert.equal(manager.selected().api_key, undefined);
   assert.equal(manager.key.placeholder, 'Leave blank to keep the saved key');
   assert.ok(manager.root.textContent.includes('••••4321')); assert.ok(!manager.root.textContent.includes('server-must-not-return-this-key'));
@@ -503,17 +507,26 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const probe = managerCalls.find((entry) => entry.address.endsWith('/test'));
   assert.equal(probe.options.method, 'POST'); assert.equal(probe.options.headers['X-EasyAPI-Management'], 'mock-management-nonce');
   assert.ok(manager.notice.textContent.includes('3 permitted models'));
-  await manager.checkBalance();
+  // Each saved card queries on initial load, and the refresh action is separate from card selection.
   const balanceCall = managerCalls.find((entry) => entry.address === '/easyapi/profiles/manual/balance');
   assert.equal(balanceCall.options.method, 'GET');
   assert.equal(balanceCall.options.headers['X-EasyAPI-Management'], 'mock-management-nonce');
-  assert.match(manager.balanceStatus.textContent, /Wallet balance.*0\.00/);
-  assert.match(manager.balanceStatus.textContent, /API key quota is unlimited/);
-  assert.match(manager.balanceStatus.textContent, /Daily budget remaining.*2\.00/);
-  delayedBalance = {};
+  const cardStatus = (id) => manager.balanceViews.get(id).status.textContent;
+  const manualView = manager.balanceViews.get('manual');
+  assert.equal(manualView.refresh.parentElement, manualView.status.parentElement.parentElement);
+  assert.match(cardStatus('manual'), /Wallet balance.*0\.00/);
+  assert.match(cardStatus('manual'), /API key quota is unlimited/);
+  assert.match(cardStatus('manual'), /Daily budget remaining.*2\.00/);
+  assert.match(cardStatus('manual'), /Used.*7\.00/);
+  assert.doesNotMatch(cardStatus('manual'), /Key quota total/);
+  assert.match(cardStatus('easyapi-env'), /Key quota total.*5\.00/);
+  delayedBalance = { capture: true };
   const oldBalance = manager.checkBalance(); await tick();
-  manager.select('easyapi-env'); delayedBalance.resolve({ wallet: { amount: 99, currency: 'USD' } }); await oldBalance;
-  assert.equal(manager.balanceStatus.textContent, '');
+  publicRows[0].model_catalog_revision = 'new';
+  await manager.refresh(undefined, { refreshBalances: true }); await tick();
+  delayedBalance.resolve({ wallet: { amount: 99, currency: 'USD' } }); await oldBalance;
+  assert.doesNotMatch(cardStatus('manual'), /99/);
+  assert.match(cardStatus('manual'), /Wallet balance.*0\.00/);
   manager.select('easyapi-env'); assert.equal(manager.saveButton.disabled, true); assert.equal(manager.deleteButton.disabled, true); assert.equal(manager.key.readOnly, true);
   window.isSecureContext = false;
   manager.newProfile();

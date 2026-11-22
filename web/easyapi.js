@@ -321,7 +321,7 @@ function registerManagerSidebar() {
   app.extensionManager.registerSidebarTab({
     id: EASYAPI_SIDEBAR_ID, icon: "easyapi-sidebar-icon", title: "EasyAPI", tooltip: t("managerTitle"), type: "custom",
     render: (container) => {
-      const manager = getProfileManager(); container.replaceChildren(manager.root); manager.refresh();
+      const manager = getProfileManager(); container.replaceChildren(manager.root); manager.refresh(undefined, { refreshBalances: true });
     },
     destroy: () => { profileManager?.destroy(); profileManager = null; },
   });
@@ -336,7 +336,7 @@ async function openProfiles(profileId = null, section = "connections") {
   const command = app.extensionManager?.command?.commands?.find((item) => item.id === id);
   if (!command) { app.extensionManager?.toast?.add?.({ severity: "warn", summary: "EasyAPI", detail: t("sidebarUnavailable") }); return; }
   if (!command.active?.()) await app.extensionManager.command.execute(id);
-  if (manager.root.isConnected) await manager.refresh(profileId || undefined);
+  if (manager.root.isConnected) await manager.refresh(profileId || undefined, { refreshBalances: section === "connections" });
 }
 
 let pickerSequence = 0;
@@ -482,8 +482,9 @@ class NodePanel {
     this.schema = el("div", { class: "ea-schema" });
     this.preview = el("pre", { class: "ea-preview" });
     this.modelInfo = el("span");
-    this.modelLabel = el("div", { class: "ea-inline-field" },
-      el("div", { class: "ea-field-name" }, el("label", { htmlFor: this.picker.input.id }, t("model")), this.modelInfo), this.picker.root);
+    const modelHeading = el("div", { class: "ea-field-name ea-model-heading" },
+      el("label", { htmlFor: this.picker.input.id }, t("model")), this.modelInfo);
+    this.modelLabel = el("div", { class: "ea-inline-field ea-model-field" }, modelHeading, this.picker.root);
     this.content.append(this.modelLabel, this.status, this.error);
     this.createPrompt();
     this.hasModel = Boolean(widget(node, "model")); this.isVideo = (node.comfyClass || node.type) === "EasyAPIVideo";
@@ -496,8 +497,8 @@ class NodePanel {
     this.paramsHint = el("div", { class: "ea-caption", hidden: true }, t("linkedInput"));
     this.content.append(this.schema, this.paramsHint);
     if (this.hasModel) {
-      this.billing = new NodeBilling({ request: requestEstimate, t, locale: hostLocale, resize: () => this.resize() });
-      this.content.append(this.billing.root);
+      this.billing = new NodeBilling({ request: requestEstimate, t, locale: hostLocale });
+      this.modelLabel.append(this.billing.root);
     }
     this.createAdvanced();
     if ((node.comfyClass || node.type) === "EasyAPIRealtime") {

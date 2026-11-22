@@ -87,6 +87,39 @@ class ProfileCredentialsTests(unittest.TestCase):
 
 
 class ConnectionTestRoute(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_quote_uses_native_currency_and_distinguishes_catalog_sources(self):
+        from types import SimpleNamespace
+        from easyapi_comfy.billing import model_estimate
+        from easyapi_comfy.client import EasyAPIError
+
+        gateway = SimpleNamespace(
+            base_url=OFFICIAL_GATEWAY,
+            request=AsyncMock(side_effect=EasyAPIError("Unavailable", status=404)),
+            model_billing_row=AsyncMock(return_value={"category": "image", "billing": {"mode": "request"},
+                "pricing": {"request": "0.029061", "discount": 0.65}}),
+            public_billing_catalog=AsyncMock(return_value={"data": [], "pricing_group": "default", "group_ratio": {"default": 1.25}}),
+        )
+        facts = {"model": "seedream-5.0-pro", "operation": "image-generation", "n": 3}
+        quote = await model_estimate(gateway, facts)
+        self.assertEqual(quote["estimate"]["currency"], "USD")
+        self.assertEqual(quote["estimate"]["basis"], "authenticated_catalog")
+        self.assertAlmostEqual(quote["estimate"]["amount"], 0.087183)
+
+        facts["model"] = "qwen-image-2.0-pro"
+        qwen = {"model_name": facts["model"], "billing_mode": "tiered_expr", "model_discount": 0.4,
+                "supported_endpoint_types": [facts["operation"]], "billing_expr": 'v2:tier("request", fixed(0.5)) * image_count'}
+        gateway.public_billing_catalog.return_value["data"] = [qwen]
+        quote = await model_estimate(gateway, facts)
+        self.assertEqual(quote["estimate"]["currency"], "CNY")
+        self.assertEqual(quote["estimate"]["basis"], "public_catalog")
+        self.assertAlmostEqual(quote["estimate"]["amount"], 0.75)
+        self.assertAlmostEqual(quote["estimate"]["original_amount"], 1.875)
+        qwen["billing_expr"] = 'v2:fixed(0.5) * len'
+        unknown = await model_estimate(gateway, facts)
+        self.assertNotIn("estimate", unknown)
+        self.assertEqual(unknown["pricing"]["currency"], "CNY")
+        self.assertEqual(unknown["pricing"]["rates"], {})
+
     async def test_legacy_gateway_preserves_key_quota_without_inventing_wallet_or_currency(self):
         from easyapi_comfy.billing import connection_balance
         from easyapi_comfy.client import EasyAPIClient
@@ -94,6 +127,7 @@ class ConnectionTestRoute(unittest.IsolatedAsyncioTestCase):
         async def usage(request):
             self.assertEqual(request.headers.get("Authorization"), "Bearer sk-legacy-billing-fixture")
             return web.json_response({"code": True, "data": {"total_available": 0, "unlimited_quota": False,
+                "total_granted": 100, "total_used": 100,
                 "budget_quota": 50, "budget_used": 60, "budget_period": 1}})
 
         app = web.Application()
@@ -102,7 +136,8 @@ class ConnectionTestRoute(unittest.IsolatedAsyncioTestCase):
             client = EasyAPIClient(str(gateway.make_url("/")).rstrip("/"), "sk-legacy-billing-fixture")
             try:
                 self.assertEqual(await connection_balance(client), {
-                    "token": {"amount": 0, "currency": "quota", "unlimited": False},
+                    "token": {"amount": 0, "currency": "quota", "unlimited": False, "source": "token_usage",
+                              "total_granted": 100, "total_used": 100},
                     "budget": {"amount": 0, "currency": "quota", "period": 1},
                 })
             finally:

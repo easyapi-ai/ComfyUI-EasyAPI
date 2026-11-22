@@ -556,23 +556,25 @@ class EasyAPIClient:
         finally:
             temporary.unlink(missing_ok=True)
 
-    async def _metadata(self, path, *, query=None, locale=None, refresh=False):
+    async def _metadata(self, path, *, query=None, locale=None, refresh=False, envelope=False):
         locale = normalize_locale(locale)
         cache_key = ("metadata", path, tuple(sorted((query or {}).items())), locale)
         pending = self._pending_catalog_load(cache_key, False)
         if pending:
-            return copy.deepcopy(await asyncio.shield(pending))
-        cached = self._cache.get(cache_key)
-        if not refresh and cached and time.monotonic() - cached[0] < 300:
-            return copy.deepcopy(cached[1])
-        value = await self._share_catalog_load(cache_key, False, self._fetch_metadata(cache_key, path, query, locale))
-        return copy.deepcopy(value)
+            payload = await asyncio.shield(pending)
+        else:
+            cached = self._cache.get(cache_key)
+            if not refresh and cached and time.monotonic() - cached[0] < 300:
+                payload = cached[1]
+            else:
+                payload = await self._share_catalog_load(cache_key, False, self._fetch_metadata(cache_key, path, query, locale))
+        return copy.deepcopy(payload.get("data", payload) if not envelope and isinstance(payload, dict) else payload)
 
     async def _fetch_metadata(self, cache_key, path, query, locale):
         try:
             response = await self.request("GET", path, query=query, locale=locale, authenticated=False)
             payload = response.data or {}
-            value = payload.get("data", payload) if isinstance(payload, dict) else {}
+            value = payload if isinstance(payload, dict) else {}
         except EasyAPIError as exc:
             if exc.status not in {0, 400, 401, 403, 404, 429, 500, 502, 503, 504}:
                 raise
@@ -592,6 +594,12 @@ class EasyAPIClient:
             if isinstance(item, dict) and item.get("model"):
                 result.setdefault(item["model"], {}).update(copy.deepcopy(item))
         return result
+
+    async def public_billing_catalog(self, locale):
+        return await self._metadata("/pricing", locale=locale, envelope=True)
+
+    async def billing_currency_config(self):
+        return await self._metadata("/app-config")
 
     async def discover_models(self, family=None, operation=None, *, locale=None, refresh=False) -> list[dict]:
         """The API-key catalog is the allow set; public metadata can only enrich it."""

@@ -192,6 +192,7 @@ Object.assign(zhTW, {
 });
 Object.assign(en, {
   checkBalance: "Check balance", checkingBalance: "Checking balance…", balanceUnavailable: "Balance unavailable",
+  refreshBalance: "Refresh balance for {name}", totalKeyQuota: "Key quota total · {amount}", usedKeyQuota: "Used · {amount}",
   walletBalance: "Wallet balance · {amount}", keyBalance: "API key balance · {amount}", unlimitedKeyBalance: "API key quota is unlimited",
   dailyBudgetBalance: "Daily budget remaining · {amount}", monthlyBudgetBalance: "Monthly budget remaining · {amount}", budgetBalance: "Budget remaining · {amount}",
   billingEstimate: "Estimated cost", billingDetails: "View model pricing and discounts", billingChecking: "Estimating…",
@@ -200,6 +201,10 @@ Object.assign(en, {
   billingUnknownUsage: "Estimated cost depends on usage during this operation.", billingModelUnavailable: "This connection has no pricing for the selected model.",
   billingQuoteUnavailable: "This gateway could not provide an estimate for the current settings.", billingOriginal: "Before discount",
   billingCatalogRates: "Model catalog rates include the catalog discount.",
+  billingPublicRates: "Public catalog rates", billingPublicDiscount: "Public catalog discount", billingPublicEstimateNote: "Reference estimate at public rates. Your connection's final price may differ.",
+  billingCatalogEstimateNote: "Estimated from this API key's catalog rate. Final cost follows actual usage.",
+  billingInputImage: "Input / image", billingOutputImage: "Output / image", billingOutputImage2K: "Large output / image",
+  billingMode: "Billing", billingDynamicCNY: "Dynamic · CNY", billingDynamicUSD: "Dynamic · USD",
   billingDiscount: "Discount", billingDiscountValue: "{discount} off", billingNoDiscount: "None", billingOffer: "Offer", billingOfferEnd: "Offer ends",
   billingInputTokens: "Input / 1M tokens", billingOutputTokens: "Output / 1M tokens", billingCacheRead: "Cache read / 1M tokens",
   billingCacheWrite: "Cache write / 1M tokens", billingPerRequest: "Per request", billingPerSecond: "Per second",
@@ -207,6 +212,7 @@ Object.assign(en, {
 });
 Object.assign(zh, {
   checkBalance: "查询余额", checkingBalance: "正在查询余额…", balanceUnavailable: "暂无法获取余额",
+  refreshBalance: "刷新{name}的余额", totalKeyQuota: "密钥总额度 · {amount}", usedKeyQuota: "已使用 · {amount}",
   walletBalance: "钱包余额 · {amount}", keyBalance: "API 密钥剩余额度 · {amount}", unlimitedKeyBalance: "API 密钥额度不限",
   dailyBudgetBalance: "今日预算剩余 · {amount}", monthlyBudgetBalance: "本月预算剩余 · {amount}", budgetBalance: "预算剩余 · {amount}",
   billingEstimate: "预计费用", billingDetails: "查看模型定价和折扣", billingChecking: "正在估算…",
@@ -215,6 +221,10 @@ Object.assign(zh, {
   billingUnknownUsage: "此操作的费用取决于运行时用量。", billingModelUnavailable: "当前连接没有该模型的定价。",
   billingQuoteUnavailable: "当前网关暂无法为这些参数提供预估。", billingOriginal: "折扣前预计费用",
   billingCatalogRates: "模型目录单价已含目录折扣。",
+  billingPublicRates: "公开目录单价", billingPublicDiscount: "公开目录折扣", billingPublicEstimateNote: "按公开目录估算，当前连接的实际结算价可能不同。",
+  billingCatalogEstimateNote: "按当前 API Key 的目录单价预估，实际费用以结算为准。",
+  billingInputImage: "输入 / 张", billingOutputImage: "输出 / 张", billingOutputImage2K: "大尺寸输出 / 张",
+  billingMode: "计费方式", billingDynamicCNY: "动态计费 · 人民币", billingDynamicUSD: "动态计费 · 美元",
   billingDiscount: "折扣", billingDiscountValue: "减免 {discount}", billingNoDiscount: "无", billingOffer: "优惠活动", billingOfferEnd: "优惠结束时间",
   billingInputTokens: "输入 / 百万 Token", billingOutputTokens: "输出 / 百万 Token", billingCacheRead: "缓存读取 / 百万 Token",
   billingCacheWrite: "缓存写入 / 百万 Token", billingPerRequest: "每次调用", billingPerSecond: "每秒",
@@ -222,6 +232,7 @@ Object.assign(zh, {
 });
 Object.assign(zhTW, {
   checkBalance: "查詢餘額", checkingBalance: "正在查詢餘額…", balanceUnavailable: "暫時無法取得餘額",
+  refreshBalance: "重新整理{name}的餘額", totalKeyQuota: "金鑰總額度 · {amount}", usedKeyQuota: "已使用 · {amount}",
   walletBalance: "錢包餘額 · {amount}", keyBalance: "API 金鑰剩餘額度 · {amount}", unlimitedKeyBalance: "API 金鑰額度不限",
   dailyBudgetBalance: "本日預算剩餘 · {amount}", monthlyBudgetBalance: "本月預算剩餘 · {amount}", budgetBalance: "預算剩餘 · {amount}",
   billingEstimate: "預估費用", billingDetails: "查看模型定價與折扣", billingChecking: "正在估算…",
@@ -230,6 +241,10 @@ Object.assign(zhTW, {
   billingUnknownUsage: "此操作的費用取決於執行時用量。", billingModelUnavailable: "目前連線沒有此模型的定價。",
   billingQuoteUnavailable: "目前閘道暫時無法為這些參數提供預估。", billingOriginal: "折扣前預估費用",
   billingCatalogRates: "模型目錄單價已含目錄折扣。",
+  billingPublicRates: "公開目錄單價", billingPublicDiscount: "公開目錄折扣", billingPublicEstimateNote: "依公開目錄估算，目前連線的實際結算價可能不同。",
+  billingCatalogEstimateNote: "依目前 API 金鑰的目錄單價預估，實際費用以結算為準。",
+  billingInputImage: "輸入 / 張", billingOutputImage: "輸出 / 張", billingOutputImage2K: "大尺寸輸出 / 張",
+  billingMode: "計費方式", billingDynamicCNY: "動態計費 · 人民幣", billingDynamicUSD: "動態計費 · 美元",
   billingDiscount: "折扣", billingDiscountValue: "減免 {discount}", billingNoDiscount: "無", billingOffer: "優惠活動", billingOfferEnd: "優惠結束時間",
   billingInputTokens: "輸入 / 百萬 Token", billingOutputTokens: "輸出 / 百萬 Token", billingCacheRead: "快取讀取 / 百萬 Token",
   billingCacheWrite: "快取寫入 / 百萬 Token", billingPerRequest: "每次呼叫", billingPerSecond: "每秒",

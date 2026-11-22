@@ -151,7 +151,7 @@ def validate_path(path: str) -> str:
         raise ValueError("Operation path cannot traverse directories")
     if parsed.fragment:
         raise ValueError("Operation path cannot contain a fragment")
-    if decoded in {"/pricing", "/pricing/schema", "/pricing/detail", "/pricing/docs", "/usage/token"}:
+    if decoded in {"/app-config", "/pricing", "/pricing/schema", "/pricing/detail", "/pricing/docs", "/usage/token"}:
         return str(path)
     allowed = ("/v1/", "/v1beta/", "/kling/", "/seedance/", "/suno/", "/mj/", "/jimeng/", "/dashscope/", "/api/v3/contents/generations/", "/api/v1/services/aigc/", "/api/v1/tasks/")
     dynamic = re.match(r"^/[A-Za-z0-9_-]+/(?:api/v3/contents/generations/|api/v1/(?:services/aigc/|tasks/)|mj/)", decoded)

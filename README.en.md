@@ -29,7 +29,7 @@ Open **EasyAPI** from the left sidebar or the extension menu. With one connectio
 
 **Test saved connection** checks model access. The ComfyUI backend stores and uses the token obtained through website authorization.
 
-Select a saved connection and choose **Check balance** to view its wallet balance, API key quota, and configured budget. Older gateways that expose only key quota show it in the original quota unit.
+Connection cards refresh their balances when you open the manager. You can also refresh each card using its icon. Where available, a card shows the wallet balance, API key quota totals and usage, and the configured budget. Older gateways expose key quota through `/usage/token`.
 
 ### Creative presets
 
@@ -62,7 +62,7 @@ The extension registers 13 nodes. If an older workflow uses `EasyAPITools`, Mode
 
 The node form shows a prompt and common settings, with dynamic parameters drawn from the selected model's schema. **Advanced JSON** starts collapsed and preserves values such as `0`, `false`, arrays, and objects. Both views edit the same parameters. Available inputs depend on the combination of connection, model, and operation.
 
-**Estimated cost** queries the selected EasyAPI gateway using the current parameters. Expand it to see model catalog rates and discounts. Wallet balances and per-run estimates require the corresponding gateway billing endpoints. The final cost follows the actual usage recorded by the gateway.
+The estimate beside the model reflects the current parameters. Click the price or info icon to see the rates, discounts, and estimate source. V1 billing displays USD and v2 expressions display CNY. On older gateways, supported catalog estimates serve as a reference. The final cost follows actual usage.
 
 Node names, ports, and controls follow ComfyUI's language setting. The extension provides node definitions in English (`en`), Simplified Chinese (`zh`), and Traditional Chinese (`zh-TW`). Model IDs, operation values, reference roles, and JSON keys are the same across languages.
 
