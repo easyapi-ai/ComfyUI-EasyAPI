@@ -81,7 +81,7 @@ const api = { async fetchApi(address, options = {}) {
     if (fixtures.holdSchema) await new Promise((resolve) => { releaseImageSchema = resolve; });
     if (fixtures.schemaError) throw new Error('Schema temporarily unavailable');
     const schema = url.searchParams.get('model') === 'seedance-2.5' ? seedanceFields : schemasByOperation[url.searchParams.get('operation')] || fields;
-    data = fixtures.schemaMetadata || { request_schema: schema, matched: true, declared: true };
+    data = (url.searchParams.get('refresh') === '1' && fixtures.refreshedSchemaMetadata) || fixtures.schemaMetadata || { request_schema: schema, matched: true, declared: true };
   }
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
   else if (url.pathname === '/easyapi/billing/estimate') {
@@ -430,6 +430,26 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   assert.ok(emptyImage.schema.textContent.includes('has not declared'));
   assert.equal(findInput(emptyImage, ['size']), undefined); assert.equal(findInput(emptyImage, ['n']), undefined);
   assert.equal(emptyImage.advanced.hidden, false);
+  fixtures.schemaMetadata = { ...fixtures.schemaMetadata, matched: false, source: 'unavailable' };
+  await emptyImage.refreshSchema();
+  assert.equal(emptyImage.schema.textContent, h.t('imageParametersFetchUnavailable'));
+  fixtures.schemaMetadata = { ...fixtures.schemaMetadata, matched: true };
+  await emptyImage.refreshSchema();
+  assert.equal(emptyImage.schema.textContent, h.t('imageParametersFetchUnavailable'), 'Unavailable metadata is distinct from a declaration with no options');
+  fixtures.schemaMetadata = { ...fixtures.schemaMetadata, matched: false, source: 'docs-no-operation-match' };
+  await emptyImage.refreshSchema();
+  assert.equal(emptyImage.schema.textContent, h.t('imageParametersFetchUnavailable'), 'An unmatched operation must not claim no parameters are declared');
+  fixtures.refreshedSchemaMetadata = { matched: true, declared: true, source: 'docs',
+    request_schema: { properties: { model: { type: 'string' }, image: { type: 'string' }, stream: { type: 'boolean' }, quality: { type: 'string', enum: ['standard', 'high'] } } },
+    form_schema: { properties: { quality: { type: 'string', enum: ['standard', 'high'] } } } };
+  await emptyImage.refreshModels();
+  assert.equal(findInput(emptyImage, ['quality']), undefined, 'Normal refresh can still use the old backend schema cache');
+  await emptyImage.refreshModels(true);
+  const refreshedSchemaRequest = new URL(requests.filter(entry => entry.address.startsWith('/easyapi/schema?')).at(-1).address, 'https://x.test');
+  assert.equal(refreshedSchemaRequest.searchParams.get('refresh'), '1', 'Manual model refresh also bypasses the schema cache');
+  assert.ok(findInput(emptyImage, ['quality']), 'Manual refresh immediately discovers parameters added after a cached empty result');
+  assert.equal(findInput(emptyImage, ['stream']), undefined); assert.equal(findInput(emptyImage, ['image']), undefined);
+  delete fixtures.refreshedSchemaMetadata;
   delete fixtures.schemaMetadata;
   await emptyImage.refreshSchema(); assert.ok(findInput(emptyImage, ['seed']));
   fixtures.holdSchema = true;

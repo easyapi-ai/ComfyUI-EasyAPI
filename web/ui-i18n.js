@@ -261,6 +261,7 @@ Object.assign(zhTW, {
 Object.assign(en, {
   loadingParameters: "Loading parameters…", parameterLoadFailed: "Model parameters could not be loaded. Try refreshing the model list.",
   imageParametersUnavailable: "This model has not declared configurable parameters for this operation. You can still use Advanced JSON.",
+  imageParametersFetchUnavailable: "Could not retrieve this model's parameter information. Refresh the model list or check the connection permissions.",
   sizeCustom: "Custom dimensions", sizeWidth: "Width", sizeHeight: "Height", sizeModelDefault: "Model default ({value})",
   "sizeError.invalid_size": "Enter a positive integer width and height, such as 1024 × 1024.",
   "sizeError.auto_not_allowed": "This model does not support automatic dimensions.",
@@ -275,6 +276,7 @@ Object.assign(en, {
 Object.assign(zh, {
   loadingParameters: "正在加载模型参数…", parameterLoadFailed: "模型参数加载失败，请刷新模型列表后重试。",
   imageParametersUnavailable: "此模型尚未声明当前操作可设置的参数，仍可使用高级 JSON。",
+  imageParametersFetchUnavailable: "无法获取此模型的参数信息，请刷新模型列表或检查连接权限。",
   sizeCustom: "自定义宽高", sizeWidth: "宽度", sizeHeight: "高度", sizeModelDefault: "模型默认值（{value}）",
   "sizeError.invalid_size": "请输入正整数宽高，例如 1024 × 1024。",
   "sizeError.auto_not_allowed": "此模型不支持自动尺寸。", "sizeError.custom_not_allowed": "请选择模型声明的尺寸。",
@@ -288,6 +290,7 @@ Object.assign(zh, {
 Object.assign(zhTW, {
   loadingParameters: "正在載入模型參數…", parameterLoadFailed: "模型參數載入失敗，請重新整理模型清單後重試。",
   imageParametersUnavailable: "此模型尚未宣告目前操作可設定的參數，仍可使用進階 JSON。",
+  imageParametersFetchUnavailable: "無法取得此模型的參數資訊，請重新整理模型清單或檢查連線權限。",
   sizeCustom: "自訂寬高", sizeWidth: "寬度", sizeHeight: "高度", sizeModelDefault: "模型預設值（{value}）",
   "sizeError.invalid_size": "請輸入正整數寬高，例如 1024 × 1024。",
   "sizeError.auto_not_allowed": "此模型不支援自動尺寸。", "sizeError.custom_not_allowed": "請選擇模型宣告的尺寸。",

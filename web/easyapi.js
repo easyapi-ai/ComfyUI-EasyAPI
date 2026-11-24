@@ -765,7 +765,7 @@ class NodePanel {
       this.picker.input.disabled = !this.models.length; this.picker.setItems(this.models, value(this.node, "model"));
       this.updateModelStatus();
       await this.refreshPresets(true);
-      if (sequence === this.sequence && !this.disposed) await this.refreshSchema();
+      if (sequence === this.sequence && !this.disposed) await this.refreshSchema(force);
     } catch (error) {
       if (error.name !== "AbortError" && sequence === this.sequence && !this.disposed) {
         this.status.textContent = t("authorityError"); this.error.textContent = error.message;
@@ -774,7 +774,7 @@ class NodePanel {
       if (sequence === this.sequence && !this.disposed) this.loadingModels = false;
     }
   }
-  async refreshSchema() {
+  async refreshSchema(force = false) {
     const profile = String(value(this.node, "profile_id")), model = String(value(this.node, "model"));
     if (!model || !this.hasModel || this.modelDriven ||
       !this.profiles?.some((connection) => (connection.id || connection.profile_id) === profile)) return;
@@ -783,6 +783,7 @@ class NodePanel {
     const mode = value(this.node, "mode", "auto") || "auto";
     const provisional = this.isVideo ? videoPortState(this.node.inputs || [], this.metadata?.video, mode).selected : "";
     const query = { profile_id: profile, model, operation: this.operationId(), locale: localeQuery() };
+    if (force) query.refresh = "1";
     if (provisional) query.variant = provisional;
     if (this.isImage) {
       this.metadata = null; this.formSchema = null; this.schemaState = "loading";
@@ -813,7 +814,8 @@ class NodePanel {
   }
   renderForm() {
     if (this.isImage && !this.modelDriven && (this.schemaState || this.formSchema && !Object.keys(this.formSchema.properties || {}).length)) {
-      const message = this.schemaState === "loading" ? "loadingParameters" : this.schemaState === "error" ? "parameterLoadFailed" : "imageParametersUnavailable";
+      const unavailable = this.metadata?.source === "unavailable" || this.metadata?.matched !== true;
+      const message = this.schemaState === "loading" ? "loadingParameters" : this.schemaState === "error" ? "parameterLoadFailed" : unavailable ? "imageParametersFetchUnavailable" : "imageParametersUnavailable";
       this.schema.replaceChildren(el("p", { class: "ea-caption" }, t(message)));
       this.resize(); this.refreshBilling(); return;
     }

@@ -62,7 +62,7 @@ The extension registers 13 nodes. If an older workflow uses `EasyAPITools`, Mode
 
 The node form shows a prompt and common settings, with dynamic parameters drawn from the selected model's schema. **Advanced JSON** starts collapsed and preserves values such as `0`, `false`, arrays, and objects. Both views edit the same parameters. Available inputs depend on the combination of connection, model, and operation.
 
-Image nodes show declared settings for the current generation or editing operation, with less common options under **More parameters**. When the model supports custom sizes, choose a preset or enter dimensions checked against its bounds, multiples, pixel area, and aspect ratio. Models without declared settings show a notice and keep **Advanced JSON** available.
+Image nodes read generation or editing parameters within the current key's model permissions, including models hidden from the marketplace. Declared settings appear directly, with less common options under **More parameters**. When the model supports custom sizes, choose a preset or enter dimensions checked against its bounds, multiples, pixel area, and aspect ratio. Models without declared settings show a notice and keep **Advanced JSON** available.
 
 The estimate beside the model reflects the current parameters. Click the price or info icon to see the rates, discounts, and estimate source. V1 billing displays USD and v2 expressions display CNY. On older gateways, supported catalog estimates serve as a reference. The final cost follows actual usage.
 

@@ -377,6 +377,7 @@ class EasyAPIClient:
         self._cache = {}
         self._catalog_loads = {}
         self._invalidated = False
+        self._metadata_authorization = 0
 
     def invalidate(self):
         # Do not abort an already submitted request: it may still incur a charge.
@@ -606,6 +607,55 @@ class EasyAPIClient:
                 payload = await self._share_catalog_load(cache_key, False, self._fetch_metadata(cache_key, path, query, locale))
         return copy.deepcopy(payload.get("data", payload) if not envelope and isinstance(payload, dict) else payload)
 
+    def _discard_authorized_metadata(self):
+        self._metadata_authorization += 1
+        for key in tuple(self._cache):
+            if isinstance(key, tuple) and key[0] in {"schema", "authenticated-model-docs", "metadata", "models", "allowed-models"}:
+                self._cache.pop(key, None)
+
+    async def _authenticated_model_docs(self, model, *, locale=None, refresh=False):
+        """None means an older gateway; an empty document is still authoritative."""
+        self._assert_current()
+        locale = normalize_locale(locale)
+        cache_key = ("authenticated-model-docs", model, locale)
+        pending = self._pending_catalog_load(cache_key, refresh)
+        if pending:
+            return copy.deepcopy(await asyncio.shield(pending))
+        cached = self._cache.get(cache_key)
+        if not refresh and self._catalog_fresh(cached):
+            return copy.deepcopy(cached[1])
+        return copy.deepcopy(await self._share_catalog_load(
+            cache_key, refresh, self._fetch_authenticated_model_docs(cache_key, model, locale)))
+
+    async def _fetch_authenticated_model_docs(self, cache_key, model, locale):
+        authorization = self._metadata_authorization
+        previous = self._cache.get(cache_key)
+        try:
+            # Gin decodes %2F before matching :model, so namespaced IDs use
+            # the equivalent query route instead of changing path encoding.
+            path = "/v1/model-docs" if "/" in model else f"/v1/models/{quote(model, safe='')}/docs"
+            query = {"model_name": model} if "/" in model else None
+            response = await self.request("GET", path, query=query, locale=locale)
+            payload = response.data
+            value = payload.get("data", payload) if isinstance(payload, dict) else None
+            if not isinstance(value, dict):
+                raise EasyAPIError("Model metadata response is not a document", status=response.status)
+        except EasyAPIError as exc:
+            if exc.status in {401, 403}:
+                self._discard_authorized_metadata()
+                raise EasyAPIError(f"Model metadata authorization failed (HTTP {exc.status}); check the selected connection", status=exc.status) from exc
+            if exc.status not in {404, 405, 501}:
+                status = f"HTTP {exc.status}" if exc.status else "connection failed"
+                raise EasyAPIError(f"Model metadata could not be loaded ({status})", status=exc.status, retryable=exc.retryable) from exc
+            value = None
+        self._assert_current()
+        if authorization != self._metadata_authorization:
+            raise EasyAPIError("Model metadata authorization changed; refresh the selected connection", status=403)
+        # A forced refresh can finish before an older shared read.
+        if self._cache.get(cache_key) is previous:
+            self._cache[cache_key] = time.monotonic(), value
+        return value
+
     async def _fetch_metadata(self, cache_key, path, query, locale):
         try:
             response = await self.request("GET", path, query=query, locale=locale, authenticated=False)
@@ -713,7 +763,7 @@ class EasyAPIClient:
             response = await self.request("GET", "/v1/models", locale=locale)
         except EasyAPIError as exc:
             if exc.status in {401, 403}:
-                self._discard_model_catalog()
+                self._discard_authorized_metadata()
             raise
         self._assert_current()
         payload = response.data or {}
@@ -749,7 +799,9 @@ class EasyAPIClient:
             extra = public.get(identifier) or {}
             category = canonical_family(row.get("category")) or canonical_family(extra.get("category"))
             async with semaphore:
-                docs = await self._metadata("/pricing/docs", query={"model_name": identifier}, locale=locale, refresh=refresh)
+                docs = await self._authenticated_model_docs(identifier, locale=locale, refresh=refresh)
+                if docs is None:
+                    docs = await self._metadata("/pricing/docs", query={"model_name": identifier}, locale=locale, refresh=refresh)
             docs = docs if isinstance(docs, dict) else {}
             category = canonical_family(docs.get("category")) or category
             if not category:
@@ -800,6 +852,7 @@ class EasyAPIClient:
 
     async def model_schema(self, model, operation=None, *, locale=None, variant=None, refresh=False) -> dict:
         self._assert_current()
+        authorization = self._metadata_authorization
         locale = normalize_locale(locale)
         variant = str(variant or "").strip() or None
         if variant not in (*VIDEO_SCENARIOS, None, "auto"):
@@ -819,7 +872,10 @@ class EasyAPIClient:
                   "required": [], "source": "unavailable", "docs": None, "params": None,
                   "matched": False, "schema_operation": None, "variants": [], "selected_variant": None,
                   "corrections": [], "warnings": []}
-        docs = await self._metadata("/pricing/docs", query={"model_name": model}, locale=locale, refresh=refresh)
+        docs = await self._authenticated_model_docs(model, locale=locale, refresh=refresh)
+        authenticated_docs = docs is not None
+        if not authenticated_docs:
+            docs = await self._metadata("/pricing/docs", query={"model_name": model}, locale=locale, refresh=refresh)
         docs = docs if isinstance(docs, dict) else {}
         result["docs"] = docs or None
         entries = _endpoint_entries(docs)
@@ -852,7 +908,7 @@ class EasyAPIClient:
                     result["request_schema"]["required"] = list(dict.fromkeys([*schema.get("required", []), *result["required"]]))
         if entries and requested and endpoint is None and not relevant_variants:
             result["source"] = "docs-no-operation-match"
-        elif not result["request_schema"].get("properties") or is_image and not _image_form_schema(result["request_schema"])["properties"]:
+        elif not authenticated_docs and (not result["request_schema"].get("properties") or is_image and not _image_form_schema(result["request_schema"])["properties"]):
             # Prefer the endpoint's exact key (api-video/openai/etc.) to the UI
             # operation id when requesting platform endpoint_params overrides.
             endpoint_key = (endpoint or {}).get("key") or (endpoint or {}).get("type") or operation
@@ -915,5 +971,9 @@ class EasyAPIClient:
             result["fallback"] = "basic-and-advanced-json" if not result["declared"] or not result["matched"] else None
         if result["fallback"] == "basic-and-advanced-json":
             result["form_schema"] = basic_form_schema(operation)
-        self._cache[cache_key] = time.monotonic(), copy.deepcopy(result)
+        self._assert_current()
+        if authorization != self._metadata_authorization:
+            raise EasyAPIError("Model metadata authorization changed; refresh the selected connection", status=403)
+        if self._cache.get(cache_key) is cached:
+            self._cache[cache_key] = time.monotonic(), copy.deepcopy(result)
         return result
