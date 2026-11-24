@@ -39,7 +39,7 @@ class FakeNode {
 function descendants(element) { return element.children.flatMap((child) => [child, ...descendants(child)]); }
 const head = new FakeNode('head'), body = new FakeNode('body'); head.root = body.root = true;
 const document = { head, body, addEventListener() {}, removeEventListener() {}, createElement: (tag) => new FakeNode(tag), createTextNode: (text) => { const item = new FakeNode(); item.textContent = text; return item; } };
-let locale = 'en', defaultProfile = null, holdNodeModels = false, releaseNodeModels;
+let locale = 'en', defaultProfile = null, holdNodeModels = false, releaseNodeModels, releaseImageSchema;
 const requests = [], settingsEvents = new Map();
 const fields = { type: 'object', required: ['count'], properties: {
   count: { type: 'integer', default: 1 }, seed: { type: 'integer', default: 42, minimum: 0, description: 'Seed used by the model.' },
@@ -78,8 +78,10 @@ const api = { async fetchApi(address, options = {}) {
     } else data = { models: fixtures.models, authority: 'api_key' };
   }
   else if (url.pathname === '/easyapi/schema') {
+    if (fixtures.holdSchema) await new Promise((resolve) => { releaseImageSchema = resolve; });
+    if (fixtures.schemaError) throw new Error('Schema temporarily unavailable');
     const schema = url.searchParams.get('model') === 'seedance-2.5' ? seedanceFields : schemasByOperation[url.searchParams.get('operation')] || fields;
-    data = { request_schema: schema, matched: true, declared: true };
+    data = fixtures.schemaMetadata || { request_schema: schema, matched: true, declared: true };
   }
   else if (url.pathname === '/easyapi/bootstrap') data = { management_nonce: 'mock-nonce' };
   else if (url.pathname === '/easyapi/billing/estimate') {
@@ -395,6 +397,52 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   locale = 'zh-TW'; assert.equal(h.t('connection'), '連線設定');
   assert.equal(h.t('audioTruncated'), ' · Audio retention limit reached');
   restored.dispose(); video.dispose();
+  // Image nodes have no operation widget: schema, models, pricing and presets follow real references.
+  locale = 'en';
+  const autoImageNode = makeNode('EasyAPIImages', { values: { profile_id: 'p2', model: 'saved-model', prompt: 'retain image prompt', params_json: '{"seed":0}' } });
+  autoImageNode.inputs.push({ name: 'image', type: 'IMAGE', link: null }, { name: 'mask', type: 'MASK', link: null }, { name: 'references', type: 'EASYAPI_MEDIA', link: null });
+  const autoImage = new h.NodePanel(autoImageNode); body.append(autoImage.root); await tick();
+  assert.equal(autoImage.operationId(), 'image-generation');
+  assert.equal(new URL(requests.filter(entry => entry.address.startsWith('/easyapi/schema?')).at(-1).address, 'https://x.test').searchParams.get('operation'), 'image-generation');
+  const imagePort = autoImageNode.inputs.find(input => input.name === 'image');
+  imagePort.link = 42; assert.equal(autoImage.syncImageOperation(), true); await tick();
+  await autoImage.refreshModels(true); await tick();
+  assert.equal(autoImage.operationId(), 'image-edit');
+  for (const endpoint of ['/easyapi/models?', '/easyapi/schema?', '/easyapi/presets?']) {
+    const last = requests.filter(entry => entry.address.startsWith(endpoint)).at(-1);
+    assert.equal(new URL(last.address, 'https://x.test').searchParams.get('operation'), 'image-edit');
+  }
+  assert.equal(get(autoImageNode, 'prompt'), 'retain image prompt'); assert.equal(JSON.parse(get(autoImageNode, 'params_json')).seed, 0);
+  let imageQuote; autoImage.billing.update = (payload) => { imageQuote = payload; };
+  autoImage.refreshBilling(); assert.equal(imageQuote.facts.operation, 'image-edit'); assert.equal(imageQuote.facts.has_image_input, true);
+  imagePort.link = null;
+  autoImage.commitParams({ input_references: ['https://media.test/ref.png'], seed: 0 }); await tick();
+  assert.equal(autoImage.operationId(), 'image-edit'); autoImage.refreshBilling();
+  assert.equal(imageQuote.facts.input_image_count, 1); assert.equal(imageQuote.facts.has_image_input, true);
+  autoImage.commitParams({ seed: 0 }); await tick();
+  assert.equal(autoImage.operationId(), 'image-generation');
+  assert.equal(new URL(requests.filter(entry => entry.address.startsWith('/easyapi/schema?')).at(-1).address, 'https://x.test').searchParams.get('operation'), 'image-generation');
+  assert.equal(get(autoImageNode, 'prompt'), 'retain image prompt'); assert.equal(JSON.parse(get(autoImageNode, 'params_json')).seed, 0);
+  assert.equal(autoImage.promptContext().operation, 'image-generation'); autoImage.dispose();
+  // An empty image declaration is explicit, while loading/failure never keeps a stale editable form.
+  fixtures.schemaMetadata = { matched: true, declared: true, request_schema: { properties: { image: { type: 'string' } } }, form_schema: { properties: {} }, fallback: 'advanced-json' };
+  const emptyImage = new h.NodePanel(makeNode()); body.append(emptyImage.root); await tick();
+  assert.ok(emptyImage.schema.textContent.includes('has not declared'));
+  assert.equal(findInput(emptyImage, ['size']), undefined); assert.equal(findInput(emptyImage, ['n']), undefined);
+  assert.equal(emptyImage.advanced.hidden, false);
+  delete fixtures.schemaMetadata;
+  await emptyImage.refreshSchema(); assert.ok(findInput(emptyImage, ['seed']));
+  fixtures.holdSchema = true;
+  const pendingImageSchema = emptyImage.refreshSchema();
+  assert.equal(emptyImage.schema.textContent, h.t('loadingParameters'));
+  assert.equal(findInput(emptyImage, ['seed']), undefined); assert.equal(emptyImage.metadata, null);
+  fixtures.holdSchema = false; releaseImageSchema(); await pendingImageSchema;
+  fixtures.schemaError = true; await emptyImage.refreshSchema();
+  assert.ok(emptyImage.schema.textContent.includes('could not be loaded'));
+  assert.equal(findInput(emptyImage, ['seed']), undefined);
+  assert.equal(emptyImage.metadata, null); assert.ok(emptyImage.error.textContent.includes('temporarily unavailable'));
+  fixtures.schemaError = false; await emptyImage.refreshSchema();
+  assert.equal(emptyImage.error.textContent, ''); assert.ok(findInput(emptyImage, ['seed'])); emptyImage.dispose();
   // Only a new, still-empty node receives an operation default after model permission lookup.
   locale = 'en';
   const defaultPreset = { id: 'default-image', profile_id: 'p2', operation: 'image-generation', model: 'saved-model', name: 'Zero / false', params: { seed: 0, stream: false } };
@@ -406,7 +454,7 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const importedValues = { ...emptyValues, model: 'other-model', params_json: '{"zero":0,"flag":false}' };
   const importedNode = makeNode('EasyAPIImages', { values: importedValues }), imported = new h.NodePanel(importedNode); body.append(imported.root); imported.configure(); await tick();
   assert.equal(get(importedNode, 'model'), 'other-model'); assert.equal(get(importedNode, 'params_json'), '{"zero":0,"flag":false}');
-  importedNode.inputs.push({ name: 'image', link: 77 }); await imported.applyPresetRecord(defaultPreset, false);
+  importedNode.inputs.push({ name: 'image', link: 77 }); await imported.applyPresetRecord({ ...defaultPreset, operation: 'image-edit' }, false);
   assert.equal(get(importedNode, 'model'), 'saved-model'); assert.equal(importedNode.inputs.at(-1).link, 77); assert.equal(get(importedNode, 'prompt'), 'preserve user prompt');
   fixtures.presets = [{ ...defaultPreset, model: 'not-permitted-model' }];
   const unavailableNode = makeNode('EasyAPIImages', { values: { ...emptyValues } }), unavailable = new h.NodePanel(unavailableNode); body.append(unavailable.root); await tick();

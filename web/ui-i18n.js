@@ -35,6 +35,10 @@ const zh = {
   "param.duration": "时长", "param.seconds": "秒数", "param.size": "尺寸", "param.resolution": "分辨率", "param.aspect_ratio": "宽高比", "param.width": "宽度", "param.height": "高度", "param.fps": "帧率", "param.seed": "随机种子", "param.n": "结果数量", "param.quality": "质量", "param.negative_prompt": "反向提示词", "param.voice": "音色", "param.speed": "语速", "param.speech_rate": "语速", "param.language": "语言", "param.temperature": "温度", "param.max_tokens": "最大 Token 数", "param.response_format": "输出格式", frozenSnapshot: "对话已冻结 · 第 {revision} 份快照", audioTruncated: " · 音频达到保留上限",
 };
 Object.assign(en, {
+  imageAutoGeneration: "Text to image · switches to image editing when a reference image is supplied.",
+  imageAutoEdit: "Image to image · uses the connected or supplied reference images.",
+  imageNodeUpdated: "EasyAPI image node updated",
+  imageLinksMigrated: "Preserved image and response links. Disconnected {count} links to removed ports; reconnect them using image, url or response.",
   refreshModelList: "Refresh EasyAPI models",
   nodeConnectionNeeded: "Set up a connection in the EasyAPI sidebar.",
   nodeDefaultConnectionNeeded: "Several connections are available. Set a default in the EasyAPI sidebar.",
@@ -44,6 +48,10 @@ Object.assign(en, {
   "param.generationConfig": "Generation settings", "param.instructions": "Instructions",
 });
 Object.assign(zh, {
+  imageAutoGeneration: "文生图 · 添加参考图片后自动切换为图生图。",
+  imageAutoEdit: "图生图 · 使用已连接或参数中提供的参考图片。",
+  imageNodeUpdated: "EasyAPI 图片节点已更新",
+  imageLinksMigrated: "图片与响应连线已保留。已断开 {count} 条旧端口连线，请使用 image、url 或响应重新连接。",
   refreshModelList: "刷新 EasyAPI 模型列表",
   nodeConnectionNeeded: "请在 EasyAPI 侧栏设置连接。",
   nodeDefaultConnectionNeeded: "已有多个连接，请在 EasyAPI 侧栏设为默认连接。",
@@ -249,6 +257,46 @@ Object.assign(zhTW, {
   billingInputTokens: "輸入 / 百萬 Token", billingOutputTokens: "輸出 / 百萬 Token", billingCacheRead: "快取讀取 / 百萬 Token",
   billingCacheWrite: "快取寫入 / 百萬 Token", billingPerRequest: "每次呼叫", billingPerSecond: "每秒",
   billingImageInput: "圖片輸入 / 百萬 Token", billingAudioInput: "音訊輸入 / 百萬 Token", billingAudioOutput: "音訊輸出 / 百萬 Token",
+});
+Object.assign(en, {
+  loadingParameters: "Loading parameters…", parameterLoadFailed: "Model parameters could not be loaded. Try refreshing the model list.",
+  imageParametersUnavailable: "This model has not declared configurable parameters for this operation. You can still use Advanced JSON.",
+  sizeCustom: "Custom dimensions", sizeWidth: "Width", sizeHeight: "Height", sizeModelDefault: "Model default ({value})",
+  "sizeError.invalid_size": "Enter a positive integer width and height, such as 1024 × 1024.",
+  "sizeError.auto_not_allowed": "This model does not support automatic dimensions.",
+  "sizeError.custom_not_allowed": "Choose one of the model's declared sizes.",
+  "sizeError.min_width": "Width must be at least {min_width} pixels.", "sizeError.max_width": "Width must be at most {max_width} pixels.",
+  "sizeError.min_height": "Height must be at least {min_height} pixels.", "sizeError.max_height": "Height must be at most {max_height} pixels.",
+  "sizeError.multiple_of": "Width and height must be multiples of {multiple_of}.",
+  "sizeError.min_pixels": "Width × height must be at least {min_pixels} pixels.", "sizeError.max_pixels": "Width × height must be at most {max_pixels} pixels.",
+  "sizeError.min_ratio": "Width ÷ height must be at least {min_ratio}.", "sizeError.max_ratio": "Width ÷ height must be at most {max_ratio}.",
+  "param.output_format": "Image format", "param.output_compression": "Output compression", "param.compression": "Compression", "param.background": "Background",
+});
+Object.assign(zh, {
+  loadingParameters: "正在加载模型参数…", parameterLoadFailed: "模型参数加载失败，请刷新模型列表后重试。",
+  imageParametersUnavailable: "此模型尚未声明当前操作可设置的参数，仍可使用高级 JSON。",
+  sizeCustom: "自定义宽高", sizeWidth: "宽度", sizeHeight: "高度", sizeModelDefault: "模型默认值（{value}）",
+  "sizeError.invalid_size": "请输入正整数宽高，例如 1024 × 1024。",
+  "sizeError.auto_not_allowed": "此模型不支持自动尺寸。", "sizeError.custom_not_allowed": "请选择模型声明的尺寸。",
+  "sizeError.min_width": "宽度不能小于 {min_width} 像素。", "sizeError.max_width": "宽度不能大于 {max_width} 像素。",
+  "sizeError.min_height": "高度不能小于 {min_height} 像素。", "sizeError.max_height": "高度不能大于 {max_height} 像素。",
+  "sizeError.multiple_of": "宽度和高度必须是 {multiple_of} 的整数倍。",
+  "sizeError.min_pixels": "宽 × 高不能小于 {min_pixels} 像素。", "sizeError.max_pixels": "宽 × 高不能大于 {max_pixels} 像素。",
+  "sizeError.min_ratio": "宽 ÷ 高不能小于 {min_ratio}。", "sizeError.max_ratio": "宽 ÷ 高不能大于 {max_ratio}。",
+  "param.output_format": "图片格式", "param.output_compression": "输出压缩率", "param.compression": "压缩率", "param.background": "背景",
+});
+Object.assign(zhTW, {
+  loadingParameters: "正在載入模型參數…", parameterLoadFailed: "模型參數載入失敗，請重新整理模型清單後重試。",
+  imageParametersUnavailable: "此模型尚未宣告目前操作可設定的參數，仍可使用進階 JSON。",
+  sizeCustom: "自訂寬高", sizeWidth: "寬度", sizeHeight: "高度", sizeModelDefault: "模型預設值（{value}）",
+  "sizeError.invalid_size": "請輸入正整數寬高，例如 1024 × 1024。",
+  "sizeError.auto_not_allowed": "此模型不支援自動尺寸。", "sizeError.custom_not_allowed": "請選擇模型宣告的尺寸。",
+  "sizeError.min_width": "寬度不能小於 {min_width} 像素。", "sizeError.max_width": "寬度不能大於 {max_width} 像素。",
+  "sizeError.min_height": "高度不能小於 {min_height} 像素。", "sizeError.max_height": "高度不能大於 {max_height} 像素。",
+  "sizeError.multiple_of": "寬度和高度必須是 {multiple_of} 的整數倍。",
+  "sizeError.min_pixels": "寬 × 高不能小於 {min_pixels} 像素。", "sizeError.max_pixels": "寬 × 高不能大於 {max_pixels} 像素。",
+  "sizeError.min_ratio": "寬 ÷ 高不能小於 {min_ratio}。", "sizeError.max_ratio": "寬 ÷ 高不能大於 {max_ratio}。",
+  "param.output_format": "圖片格式", "param.output_compression": "輸出壓縮率", "param.compression": "壓縮率", "param.background": "背景",
 });
 export function hostLocale() { return app.extensionManager?.setting?.get("Comfy.Locale") || "en"; }
 export function localeQuery() { return hostLocale(); }

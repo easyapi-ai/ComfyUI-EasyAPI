@@ -5,12 +5,62 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from easyapi_comfy.client import APIResponse
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
+from easyapi_comfy.client import APIResponse, EasyAPIClient
 from easyapi_comfy.media import decode_response, encode_inputs, response_text
 from easyapi_comfy.runtime import Runtime
 
 
 class MediaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_url_image_with_empty_base64_placeholder_decodes_one_real_image(self):
+        from PIL import Image
+        content = io.BytesIO()
+        Image.new("RGB", (4, 3), "red").save(content, format="PNG")
+        app = web.Application()
+        downloads = []
+
+        async def image(request):
+            downloads.append(request.headers.get("Authorization"))
+            return web.Response(body=content.getvalue(), content_type="image/png")
+
+        app.router.add_get("/result.png", image)
+        server = TestServer(app)
+        await server.start_server()
+        client = EasyAPIClient(str(server.make_url("")), "fixture-key")
+        try:
+            for placeholder in ("", "  "):
+                with self.subTest(placeholder=repr(placeholder)), tempfile.TemporaryDirectory() as directory:
+                    response = APIResponse(data={"data": [{"b64_json": placeholder,
+                                                           "url": str(server.make_url("/result.png"))}]})
+                    decoded = await decode_response(response, client, directory)
+                    self.assertEqual(tuple(decoded["images"].shape), (1, 3, 4, 3))
+                    self.assertEqual(len(decoded["files"]), 1)
+                    self.assertEqual(Path(decoded["files"][0]).read_bytes(), content.getvalue())
+                    self.assertEqual(len(list(Path(directory).iterdir())), 1)
+            self.assertEqual(downloads, [None, None])
+        finally:
+            await client.close()
+            await server.close()
+
+    async def test_empty_inline_media_reports_empty_content_without_publishing_a_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "[Ee]mpty.*media"):
+                await decode_response({"data": [{"url": "data:image/png;base64,"}]}, None, directory)
+            self.assertFalse(list(Path(directory).iterdir()))
+
+    async def test_empty_image_and_audio_placeholders_are_not_media_assets(self):
+        for value in ({"data": [{"b64_json": ""}]}, {"data": [{"b64_json": "  "}]},
+                      {"audio": {"type": "audio", "data": "", "format": "wav"}},
+                      {"audio": {"type": "audio", "data": "  ", "format": "wav"}}):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                decoded = await decode_response(value, None, directory)
+                self.assertEqual(decoded["files"], [])
+                self.assertIsNone(decoded["images"])
+                self.assertIsNone(decoded["audio"])
+                self.assertFalse(list(Path(directory).iterdir()))
+
     async def test_image_and_mask_use_real_tensors_and_openai_alpha_convention(self):
         import numpy as np
         import torch

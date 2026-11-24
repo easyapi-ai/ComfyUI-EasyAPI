@@ -90,7 +90,7 @@
   },
   "EasyAPIImages": {
     "display_name": "EasyAPI Images",
-    "description": "Generate or edit images, including asynchronous image tasks. Connect IMAGE and MASK inputs directly.",
+    "description": "Automatically choose synchronous text-to-image or image editing based on reference images. Outputs image, the first upstream url, and the complete response.",
     "inputs": {
       "profile_id": {
         "name": "Connection",
@@ -100,16 +100,6 @@
         "name": "Model",
         "tooltip": "Choose a model available to this connection and operation. The model ID is unchanged by language settings."
       },
-      "operation": {
-        "name": "Operation",
-        "tooltip": "Choose the supported operation. The saved protocol value stays unchanged when the interface language changes.",
-        "options": {
-          "image-generation": "Generate images",
-          "image-edit": "Edit images",
-          "image-task": "Submit image task",
-          "image-task-edit": "Submit image edit task"
-        }
-      },
       "prompt": {
         "name": "Prompt",
         "tooltip": "Describe the result to create. Connected input values take precedence over the same fields in advanced parameters."
@@ -117,14 +107,6 @@
       "params_json": {
         "name": "Advanced parameters",
         "tooltip": "JSON object for additional parameters. Basic and model-specific controls write to the same object; false, zero, arrays and objects are preserved."
-      },
-      "wait_for_result": {
-        "name": "Wait for result",
-        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
-      },
-      "timeout": {
-        "name": "Wait timeout (seconds)",
-        "tooltip": "Maximum local wait. A timeout or local stop keeps the task available for resuming and does not cancel upstream billing."
       },
       "image": {
         "name": "Image",
@@ -134,43 +116,20 @@
         "name": "Mask",
         "tooltip": "ComfyUI MASK input for supported image edits. A value of 1 selects the area to edit."
       },
-      "audio": {
-        "name": "Audio",
-        "tooltip": "ComfyUI AUDIO input with waveform and sample rate."
-      },
-      "video": {
-        "name": "Video",
-        "tooltip": "Native ComfyUI VIDEO input. Supported requests transfer the file as a stream."
-      },
       "references": {
-        "name": "Additional references",
-        "tooltip": "Optional reference group from EasyAPI References. Model metadata determines which roles and counts are supported."
+        "name": "Reference images",
+        "tooltip": "Image reference group. Supplying reference images automatically selects image editing."
       }
     },
     "outputs": {
       "0": {
-        "name": "Text"
+        "name": "image"
       },
       "1": {
-        "name": "JSON"
+        "name": "url"
       },
       "2": {
-        "name": "Images"
-      },
-      "3": {
-        "name": "Mask"
-      },
-      "4": {
-        "name": "Audio"
-      },
-      "5": {
-        "name": "Video"
-      },
-      "6": {
-        "name": "Task"
-      },
-      "7": {
-        "name": "References"
+        "name": "response"
       }
     }
   },

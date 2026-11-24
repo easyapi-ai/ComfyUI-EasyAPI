@@ -92,6 +92,11 @@
 .ea-node-panel .ea-field-name {color:var(--ea-node-label);font-weight:400}
 .ea-field-name>label,.ea-inline-field .ea-field-name>label {display:inline;font:inherit}
 .ea-node-panel .ea-field-wide {gap:3px}
+.ea-size-control {display:flex;flex-direction:column;gap:5px;min-width:0}
+.ea-size-dimensions {display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:5px;min-width:0}
+.ea-size-dimensions>span {color:var(--ea-node-label,var(--ea-muted));text-align:center}
+.ea-size-error {display:block;line-height:1.4}
+.easyapi-panel .ea-size-control input[aria-invalid=true] {outline:1px solid #df8b80;outline-offset:-1px}
 .ea-node-panel .ea-reset {min-height:18px;padding:0 2px;font-size:13px}
 .easyapi-panel input.ea-switch {
   appearance:none;

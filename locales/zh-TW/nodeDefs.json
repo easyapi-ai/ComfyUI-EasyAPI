@@ -90,7 +90,7 @@
   },
   "EasyAPIImages": {
     "display_name": "EasyAPI 圖片",
-    "description": "產生或編輯圖片，支援非同步圖片任務，可直接連接 IMAGE 與 MASK。",
+    "description": "依參考圖片自動選擇同步文生圖或圖生圖，僅輸出 image、第一個上游 url 與完整回應。",
     "inputs": {
       "profile_id": {
         "name": "連線",
@@ -100,16 +100,6 @@
         "name": "模型",
         "tooltip": "選擇目前連線及操作可用的模型。切換語言不會修改模型 ID。"
       },
-      "operation": {
-        "name": "操作",
-        "tooltip": "選擇支援的操作。介面翻譯不會修改儲存的協定值。",
-        "options": {
-          "image-generation": "產生圖片",
-          "image-edit": "編輯圖片",
-          "image-task": "提交圖片任務",
-          "image-task-edit": "提交圖片編輯任務"
-        }
-      },
       "prompt": {
         "name": "提示詞",
         "tooltip": "描述要產生的結果。已連接輸入優先於進階參數中的同名欄位。"
@@ -117,14 +107,6 @@
       "params_json": {
         "name": "進階參數",
         "tooltip": "擴充參數 JSON 物件。基本及模型專屬控制項寫入同一物件，保留 false、0、陣列和物件。"
-      },
-      "wait_for_result": {
-        "name": "等待結果",
-        "tooltip": "等待非同步任務完成。關閉後傳回任務控制代碼，可連接獨立任務節點。"
-      },
-      "timeout": {
-        "name": "等待逾時（秒）",
-        "tooltip": "本機最長等待時間。逾時或停止等待後仍可恢復任務，不等於取消上游計費。"
       },
       "image": {
         "name": "圖片",
@@ -134,43 +116,20 @@
         "name": "遮罩",
         "tooltip": "支援圖片編輯的 ComfyUI MASK 輸入，值為 1 表示要編輯的區域。"
       },
-      "audio": {
-        "name": "音訊",
-        "tooltip": "包含波形及取樣率的 ComfyUI AUDIO 輸入。"
-      },
-      "video": {
-        "name": "影片",
-        "tooltip": "原生 ComfyUI VIDEO 輸入。支援檔案的請求透過檔案串流傳輸。"
-      },
       "references": {
-        "name": "額外參考群組",
-        "tooltip": "來自 EasyAPI 素材與參考群組的選用參考群組。支援的角色與數量由模型中繼資料決定。"
+        "name": "圖片參考群組",
+        "tooltip": "僅接受圖片參考群組；提供參考圖片後自動切換為同步圖生圖。"
       }
     },
     "outputs": {
       "0": {
-        "name": "文字"
+        "name": "image"
       },
       "1": {
-        "name": "JSON"
+        "name": "url"
       },
       "2": {
-        "name": "圖片"
-      },
-      "3": {
-        "name": "遮罩"
-      },
-      "4": {
-        "name": "音訊"
-      },
-      "5": {
-        "name": "影片"
-      },
-      "6": {
-        "name": "任務"
-      },
-      "7": {
-        "name": "素材"
+        "name": "回應"
       }
     }
   },

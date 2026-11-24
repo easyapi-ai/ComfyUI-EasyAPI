@@ -192,6 +192,25 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             await gateway.close()
             await other.close()
 
+    async def test_empty_download_preserves_existing_file_and_removes_partial(self):
+        app = web.Application()
+
+        async def empty(request):
+            return web.Response(body=b"", content_type="image/png")
+
+        app.router.add_get("/result.png", empty)
+        server = TestServer(app)
+        await server.start_server()
+        destination = self.directory / "result.png"
+        destination.write_bytes(b"existing-file")
+        try:
+            with self.assertRaisesRegex(EasyAPIError, "[Ee]mpty"):
+                await self.client.download(str(server.make_url("/result.png")), destination)
+            self.assertEqual(destination.read_bytes(), b"existing-file")
+            self.assertFalse(destination.with_name("result.png.partial").exists())
+        finally:
+            await server.close()
+
     async def test_wait_recovers_transient_queries_without_submit_and_persists_result(self):
         store = TaskStore(self.directory)
         handle = create_task_handle(APIResponse(data={"id": "test"}), "profile", get_protocol("video-generation"))

@@ -59,17 +59,20 @@ def main():
         inputs.update(values)
         return {'class_type': kind, 'inputs': inputs, '_meta': {'title': definitions[kind].get('display_name', kind)}}
     def creative(kind, operation, model, **values):
-        return node(kind, **{'profile_id': 'mock', 'model': model, 'operation': operation, 'prompt': '离线接口验收', **values})
+        fields = {'profile_id': 'mock', 'model': model, 'prompt': '离线接口验收', **values}
+        if kind != 'EasyAPIImages':
+            fields['operation'] = operation
+        return node(kind, **fields)
     def preview(source, **values):
         return node('EasyAPIPreview', text=[source, 0], json_value=[source, 1], **values)
     cases = {
         '01-chat': {'1': creative('EasyAPIChat', 'chat', 'mock-text'), '2': preview('1')},
         '02-stream': {'1': creative('EasyAPIChat', 'chat', 'mock-text', params_json='{"stream":true,"temperature":0}'), '2': preview('1')},
-        '03-image': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image', params_json='{"seed":0,"watermark":false}'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/image')},
-        '04-image-edit': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIImages', 'image-edit', 'mock-image', image=['1', 2]), '3': node('SaveImage', images=['2', 2], filename_prefix='EasyAPI-verify/edit')},
-        '05-async-image': {'1': creative('EasyAPIImages', 'image-task', 'mock-image'), '2': node('SaveImage', images=['1', 2], filename_prefix='EasyAPI-verify/async-image')},
+        '03-image': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image', params_json='{"seed":0,"watermark":false}'), '2': node('SaveImage', images=['1', 0], filename_prefix='EasyAPI-verify/image')},
+        '04-image-edit': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIImages', 'image-edit', 'mock-image', image=['1', 0]), '3': node('SaveImage', images=['2', 0], filename_prefix='EasyAPI-verify/edit')},
+        '05-image-response': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPIPreview', text=['1', 1], json_value=['1', 2]), '3': node('SaveImage', images=['1', 0], filename_prefix='EasyAPI-verify/image-response')},
         '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/video')},
-        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 2], last_frame=['1', 2], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/frames')},
+        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 0], last_frame=['1', 0], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/frames')},
         '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-transcribe', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
         '10-claude-messages': {'1': creative('EasyAPIChat', 'messages', 'mock-text', params_json='{"max_tokens":16}'), '2': preview('1')},
         '11-video-audio-reference': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video', reference_audio_1=['1', 4], params_json='{"generate_audio":false}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/audio-reference')},

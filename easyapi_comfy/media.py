@@ -152,9 +152,10 @@ def _collect_media(value):
                 hint = "audio"
             elif "video" in type_hint:
                 hint = "video"
-            if isinstance(node.get("b64_json"), str):
+            # URL responses also carry an empty b64_json placeholder.
+            if isinstance(node.get("b64_json"), str) and node["b64_json"].strip():
                 found.append(("data:image/png;base64," + node["b64_json"], "image"))
-            if hint == "audio" and isinstance(node.get("data"), str):
+            if hint == "audio" and isinstance(node.get("data"), str) and node["data"].strip():
                 fmt = str(node.get("format") or "mp3")
                 found.append((f"data:audio/{fmt};base64," + node["data"], "audio"))
             for key, child in node.items():
@@ -270,6 +271,8 @@ async def decode_response(response, client, output_dir):
                 raw = base64.b64decode(payload, validate=True)
             except (binascii.Error, ValueError) as exc:
                 raise ValueError("Invalid base64 media response") from exc
+            if not raw:
+                raise ValueError("Empty inline media response")
             suffix = mimetypes.guess_extension(header[5:].split(";", 1)[0]) or ".bin"
             path = _new_path(output_dir, suffix)
             await asyncio.to_thread(path.write_bytes, raw)

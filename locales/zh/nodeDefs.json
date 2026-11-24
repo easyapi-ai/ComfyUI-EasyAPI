@@ -90,7 +90,7 @@
   },
   "EasyAPIImages": {
     "display_name": "EasyAPI 图片",
-    "description": "生成或编辑图片，支持异步图片任务，可直接连接 IMAGE 与 MASK。",
+    "description": "根据参考图片自动选择同步文生图或图生图，仅输出 image、首个上游 url 和完整响应。",
     "inputs": {
       "profile_id": {
         "name": "连接",
@@ -100,16 +100,6 @@
         "name": "模型",
         "tooltip": "选择当前连接及操作可用的模型。切换语言不会修改模型 ID。"
       },
-      "operation": {
-        "name": "操作",
-        "tooltip": "选择支持的操作。界面翻译不会修改保存的协议值。",
-        "options": {
-          "image-generation": "生成图片",
-          "image-edit": "编辑图片",
-          "image-task": "提交图片任务",
-          "image-task-edit": "提交图片编辑任务"
-        }
-      },
       "prompt": {
         "name": "提示词",
         "tooltip": "描述要生成的结果。已连接输入优先于高级参数中的同名字段。"
@@ -117,14 +107,6 @@
       "params_json": {
         "name": "高级参数",
         "tooltip": "扩展参数 JSON 对象。基础及模型专属控件写入同一对象，保留 false、0、数组和对象。"
-      },
-      "wait_for_result": {
-        "name": "等待结果",
-        "tooltip": "等待异步任务完成。关闭后返回任务句柄，可连接独立任务节点。"
-      },
-      "timeout": {
-        "name": "等待超时（秒）",
-        "tooltip": "本地最长等待时间。超时或停止等待后仍可恢复任务，不等于取消上游计费。"
       },
       "image": {
         "name": "图片",
@@ -134,43 +116,20 @@
         "name": "蒙版",
         "tooltip": "支持图片编辑的 ComfyUI MASK 输入，值为 1 表示要编辑的区域。"
       },
-      "audio": {
-        "name": "音频",
-        "tooltip": "包含波形及采样率的 ComfyUI AUDIO 输入。"
-      },
-      "video": {
-        "name": "视频",
-        "tooltip": "原生 ComfyUI VIDEO 输入。支持文件的请求通过文件流传输。"
-      },
       "references": {
-        "name": "额外参考组",
-        "tooltip": "来自 EasyAPI 素材与参考组的可选参考组。支持的角色与数量由模型元数据决定。"
+        "name": "图片参考组",
+        "tooltip": "仅接受图片参考组；提供参考图片后自动切换为同步图生图。"
       }
     },
     "outputs": {
       "0": {
-        "name": "文本"
+        "name": "image"
       },
       "1": {
-        "name": "JSON"
+        "name": "url"
       },
       "2": {
-        "name": "图片"
-      },
-      "3": {
-        "name": "蒙版"
-      },
-      "4": {
-        "name": "音频"
-      },
-      "5": {
-        "name": "视频"
-      },
-      "6": {
-        "name": "任务"
-      },
-      "7": {
-        "name": "素材"
+        "name": "响应"
       }
     }
   },

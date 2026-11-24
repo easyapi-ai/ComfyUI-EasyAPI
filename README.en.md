@@ -44,7 +44,7 @@ Workflows store only connection IDs. The ComfyUI backend keeps keys in its persi
 | Node | Purpose |
 |---|---|
 | EasyAPI Chat | Chat, Responses, Claude Messages, Gemini, and text completion |
-| EasyAPI Images | Image generation, editing, and asynchronous image tasks |
+| EasyAPI Images | Synchronous text to image or image editing, selected automatically from reference images; image, url and response outputs |
 | EasyAPI Video | Video generation through the unified `/v1/videos` endpoint |
 | EasyAPI Speech | Text-to-speech with native `AUDIO` output |
 | EasyAPI Transcribe | Transcription and translation for `AUDIO` or `VIDEO` with an audio track, using a compatible model |
@@ -61,6 +61,8 @@ The extension registers 13 nodes. If an older workflow uses `EasyAPITools`, Mode
 ## Forms and languages
 
 The node form shows a prompt and common settings, with dynamic parameters drawn from the selected model's schema. **Advanced JSON** starts collapsed and preserves values such as `0`, `false`, arrays, and objects. Both views edit the same parameters. Available inputs depend on the combination of connection, model, and operation.
+
+Image nodes show declared settings for the current generation or editing operation, with less common options under **More parameters**. When the model supports custom sizes, choose a preset or enter dimensions checked against its bounds, multiples, pixel area, and aspect ratio. Models without declared settings show a notice and keep **Advanced JSON** available.
 
 The estimate beside the model reflects the current parameters. Click the price or info icon to see the rates, discounts, and estimate source. V1 billing displays USD and v2 expressions display CNY. On older gateways, supported catalog estimates serve as a reference. The final cost follows actual usage.
 
@@ -88,7 +90,9 @@ Local media goes directly to endpoints that accept files or inline data. When an
 
 ## Tasks and real-time sessions
 
-A generation node submits a new request each time it runs in the queue. For asynchronous operations, turn off **Wait for result** and connect the task output to a status, wait, or download node. Task IDs and polling details are stored in the persistent user directory so you can resume after stopping a wait, reaching a timeout, or restarting ComfyUI. The upstream task can continue after the local wait ends. If submission times out before returning a task ID, check the platform for the task before submitting it again.
+A generation node submits a new request each time it runs in the queue. The image node uses synchronous endpoints only: text to image without references, or image editing when an image, reference group or image URL parameter is supplied. Its outputs are image, the first upstream url, and the complete response. The url is empty when the upstream provides only base64.
+
+For other asynchronous operations, turn off **Wait for result** and connect the task output to a status, wait, or download node. Task IDs and polling details are stored in the persistent user directory so you can resume after stopping a wait, reaching a timeout, or restarting ComfyUI. The upstream task can continue after the local wait ends. If submission times out before returning a task ID, check the platform for the task before submitting it again.
 
 Use the connection, voice or text, mute, interrupt, and end controls on the real-time node. Freeze or apply the conversation, then run the workflow to read the text and `AUDIO` snapshot. Live sessions run independently of the generation queue. The microphone starts when you activate it on the node.
 

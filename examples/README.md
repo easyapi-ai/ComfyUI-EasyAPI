@@ -9,8 +9,8 @@
 | `01-chat.json` | 普通对话 |
 | `02-stream.json` | SSE 对话，保留温度 `0` |
 | `03-image.json` | 图片生成，保留 `seed=0` 和 `watermark=false` |
-| `04-image-edit.json` | 生成图片直接连接图片编辑 |
-| `05-async-image.json` | 异步图片任务 |
+| `04-image-edit.json` | 生成图片直接连接参考图片输入，自动调用同步图生图 |
+| `05-image-response.json` | 图片、URL 和完整响应三个输出 |
 | `06-video.json` | 统一视频生成及原生 SaveVideo |
 | `07-video-references.json` | 图片直接连接视频 `first_frame` 与 `last_frame` |
 | `08-speech-transcribe.json` | TTS、原生 AUDIO、兼容转录模型及 SaveAudio |
@@ -22,5 +22,7 @@
 `14-realtime-and-image.json` 是可拖入的图形工作流。先选择连接和实时模型，通过语音或文字完成对话并冻结或应用，再运行工作流读取结果。快照 ID 初始为空，不引用其他机器的录音。麦克风需要受信任 HTTPS 或 localhost。
 
 示例不依赖已移除的 Moderation、Search、Rerank、Embedding、NativeRequest、Midjourney、Suno 节点。旧音乐、Midjourney、原生请求示例不再作为本版本用法。
+
+图片节点只使用同步接口：未传参考图片时文生图，传入图片或图片参考组时图生图。输出顺序为 `image`、`url`、`响应`；多张图片保留为 IMAGE 批次，`url` 为首个上游 URL，完整结果在响应中。仅返回 base64 时 URL 为空。图片异步任务示例已移除。
 
 模拟音频、图片和视频只验证协议与媒体连接，不代表真实模型效果；参考角色、数量和组合以当前连接的能力声明为准。

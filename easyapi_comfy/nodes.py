@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import copy
 import json
 import mimetypes
@@ -10,13 +11,15 @@ import shutil
 import uuid
 import re
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from comfy_api.latest import io
 
 from . import media
 from .client import APIResponse, EasyAPIError, UploadFile
+from .image_parameters import normalize_image_size
 from .protocols import PROTOCOLS, get_protocol, validate_path
+from .progress import native_progress
 from .runtime import get_runtime
 from .tasks import create_task_handle, wait_for_task
 from .video import VIDEO_SLOTS, encode_video_sources, select_video_scenario
@@ -134,6 +137,18 @@ async def validate_request(client, model, protocol, body, files, *, apply_defaul
             continue
         specification = properties.get(field, {})
         candidate[field] = filenames if specification.get("type") == "array" else filenames[0]
+    size_definition = properties.get("size", {})
+    size_spec = size_definition.get("x-size-spec") if isinstance(size_definition, dict) else None
+    normalized_size = None
+    if "size" in body and isinstance(size_spec, dict) and size_spec.get("allow_custom") is True:
+        normalized_size = normalize_image_size(size_definition, body["size"])
+        candidate["size"] = normalized_size
+        # Extend only this request's size enum. The cached model contract and
+        # all other JSON Schema constraints must remain unchanged.
+        schema = copy.deepcopy(schema)
+        size_definition = schema["properties"]["size"]
+        if isinstance(size_definition.get("enum"), list) and normalized_size not in size_definition["enum"]:
+            size_definition["enum"].append(normalized_size)
     try:
         Draft202012Validator.check_schema(schema)
         error = next(Draft202012Validator(schema).iter_errors(candidate), None)
@@ -150,6 +165,8 @@ async def validate_request(client, model, protocol, body, files, *, apply_defaul
                         if error.validator == "required" else "缺少必需字段",
         }
         raise ValueError(f"模型参数 {location}：{hints.get(error.validator, '不符合模型声明的参数约束')}")
+    if normalized_size is not None:
+        body["size"] = normalized_size
 
 
 def _accepted_media(operation, family):
@@ -500,6 +517,7 @@ class OperationNode(io.ComfyNode):
         return float("nan")
 
     @classmethod
+    @native_progress
     async def execute(cls, profile_id="", model="", prompt="", params_json="{}", operation="chat",
                       wait_for_result=True, timeout=1800, image=None, mask=None, audio=None,
                       video=None, references=None):
@@ -544,10 +562,176 @@ def _operation_class(name, display, ops):
 
 
 EasyAPIChat = _operation_class("EasyAPIChat", "EasyAPI 对话与多模态", ["chat", "responses", "responses-compact", "messages", "completions", "gemini-generate", "gemini-stream"])
-EasyAPIImages = _operation_class("EasyAPIImages", "EasyAPI 图片生成与编辑", ["image-generation", "image-edit", "image-task", "image-task-edit"])
 EasyAPISpeech = _operation_class("EasyAPISpeech", "EasyAPI 语音合成", ["audio-speech"])
 EasyAPITranscribe = _operation_class("EasyAPITranscribe", "EasyAPI 转写与翻译", ["audio-transcriptions", "audio-translations"])
 EasyAPICountTokens = _operation_class("EasyAPICountTokens", "EasyAPI Token 计数", ["messages-count-tokens"])
+
+
+def _image_parameter_references(params):
+    references = []
+
+    def add(value, kind):
+        if value is None or value == "":
+            return
+        if isinstance(value, list):
+            for entry in value:
+                add(entry, kind)
+            return
+        if isinstance(value, media.MediaSource):
+            if value.kind != kind:
+                raise ValueError("图片节点仅接受图片参考和蒙版。")
+            references.append(copy.copy(value))
+            return
+        if isinstance(value, dict):
+            declared_kind = value.get("kind") or value.get("type") or kind
+            if declared_kind not in {kind, "image_url" if kind == "image" else "mask"}:
+                raise ValueError("图片节点仅接受图片参考和蒙版，不支持音频或视频参考。")
+            location = value.get("url") or value.get("image_url") or value.get("path")
+            if isinstance(location, dict):
+                location = location.get("url")
+            if not location:
+                raise ValueError("图片参考需要 url 或本地 path；不支持未解析的素材 ID。")
+            add(location, kind)
+            return
+        if not isinstance(value, (str, Path)) or not str(value).strip():
+            raise ValueError("图片参考必须是图片 URL、本地路径或图片参考记录。")
+        location = str(value).strip()
+        scheme = urlsplit(location).scheme.lower()
+        if scheme in {"http", "https", "data"}:
+            references.append(media.MediaSource(kind, url=location))
+        elif scheme and not (len(scheme) == 1 and len(location) > 2 and location[1] == ":"):
+            raise ValueError("图片参考仅支持 http(s)、data:image 或本地图片路径。")
+        else:
+            references.append(media.MediaSource(kind, path=location))
+
+    for field in ("image", "images", "input_references"):
+        add(params.pop(field, None), "image")
+    add(params.pop("mask", None), "mask")
+    return references
+
+
+async def _materialize_image_references(client, runtime, sources):
+    """The sync edits route requires actual image files, including URL inputs."""
+    if any(source.kind not in {"image", "mask"} for source in sources):
+        raise ValueError("图片节点仅接受图片参考和蒙版，不支持音频或视频参考。")
+    has_image = any(source.kind == "image" for source in sources)
+    if not has_image and any(source.kind == "mask" for source in sources):
+        raise ValueError("蒙版需要参考图片，请连接 image 或图片参考组。")
+    if not has_image:
+        return []
+
+    def verify(path):
+        from PIL import Image
+        if not 0 < Path(path).stat().st_size <= MAX_MEDIA_BYTES:
+            raise ValueError("参考图片必须非空，且不能超过 100 MiB。")
+        try:
+            with Image.open(path) as image:
+                mime = Image.MIME.get(image.format, "image/png")
+                image.verify()
+        except (OSError, ValueError) as error:
+            raise ValueError("参考素材不是有效图片；尚未提交生成请求。") from error
+        return mime
+
+    result = []
+    for source in sources:
+        source = copy.copy(source)
+        if not source.path:
+            location = str(source.url or "")
+            directory = Path(runtime.input_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            if location.startswith("data:"):
+                header, separator, payload = location.partition(",")
+                mime = header[5:].split(";", 1)[0].lower()
+                if not separator or not mime.startswith("image/") or ";base64" not in header:
+                    raise ValueError("图片参考必须使用 data:image/...;base64 编码。")
+                if len(payload) > ((MAX_MEDIA_BYTES + 2) // 3) * 4:
+                    raise ValueError("单个参考图片超过 100 MiB 上限。")
+                try:
+                    raw = base64.b64decode(payload, validate=True)
+                except (binascii.Error, ValueError) as error:
+                    raise ValueError("图片参考的 base64 编码无效。") from error
+                if not raw or len(raw) > MAX_MEDIA_BYTES:
+                    raise ValueError("参考图片必须非空，且不能超过 100 MiB。")
+                path = directory / (uuid.uuid4().hex + (mimetypes.guess_extension(mime) or ".png"))
+                await asyncio.to_thread(path.write_bytes, raw)
+            else:
+                if not location.startswith(("http://", "https://")):
+                    raise ValueError("图片参考需要有效的本地图片或 http(s) URL。")
+                suffix = Path(urlsplit(location).path).suffix
+                path = directory / (uuid.uuid4().hex + (suffix if 1 < len(suffix) <= 7 else ".png"))
+                await client.download(location, path, max_bytes=MAX_MEDIA_BYTES)
+            source.path = str(path)
+        source.mime = await asyncio.to_thread(verify, source.path)
+        result.append(source)
+    _guard_sources(result)
+    return result
+
+
+class EasyAPIImages(OperationNode):
+    NODE_ID = "EasyAPIImages"
+    DISPLAY = "EasyAPI 图片生成与编辑"
+    OPS = ("image-generation", "image-edit")
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id=cls.NODE_ID, display_name=cls.DISPLAY, category="EasyAPI/创作",
+                         inputs=[io.String.Input("profile_id", default="", tooltip="连接配置别名"),
+                                 io.String.Input("model", default="", tooltip="选择支持当前文生图或图生图操作的模型"),
+                                 io.String.Input("prompt", default="", multiline=True),
+                                 io.String.Input("params_json", default="{}", multiline=True),
+                                 io.Image.Input("image", optional=True), io.Mask.Input("mask", optional=True),
+                                 MEDIA.Input("references", optional=True)],
+                         outputs=[io.Image.Output(id="image", display_name="image"),
+                                  io.String.Output(id="url", display_name="url", tooltip="首个真实上游图片 URL；多图的全部 URL 保留在响应中。仅返回 base64 时为空。"),
+                                  JSON.Output(id="response", display_name="响应")],
+                         not_idempotent=True,
+                         description="同步生成图片；有参考图片时自动图生图，无参考图片时自动文生图。")
+
+    @classmethod
+    @native_progress
+    async def execute(cls, profile_id="", model="", prompt="", params_json="{}",
+                      image=None, mask=None, references=None, **legacy):
+        if set(legacy) - {"operation", "wait_for_result", "timeout", "audio", "video"}:
+            raise ValueError("图片节点包含已不支持的输入，请重新创建新版图片节点。")
+        if legacy.get("operation") not in {None, "", "image-generation", "image-edit"}:
+            raise ValueError("新版图片节点仅支持同步生成；请重新创建图片节点，移除旧异步操作。")
+        if legacy.get("wait_for_result", True) is not True:
+            raise ValueError("新版图片节点始终同步等待图片，请移除 wait_for_result=False 或重新创建节点。")
+        if legacy.get("audio") is not None or legacy.get("video") is not None:
+            raise ValueError("图片节点不支持音频或视频输入，请移除旧连线。")
+        if not model:
+            raise ValueError("Select an EasyAPI image model before running this node.")
+        params = parse_object(params_json)
+        if params.pop("stream", False) not in (None, False):
+            raise ValueError("图片节点仅支持同步非流式请求，请移除 stream=true。")
+        if any(field in params for field in ("image_url", "input_image", "audio", "video", "reference_audio", "reference_video")):
+            raise ValueError("图片参考请使用 image、images 或 input_references；图片节点不支持音视频参数。")
+        if any(field in params for field in ("__path", "__method", "__transport", "__polling")):
+            raise ValueError("图片节点的同步路由由参考图片自动选择，不能覆盖路由或轮询配置。")
+        if any(params.get(field) not in (None, False) for field in ("async", "async_mode")):
+            raise ValueError("图片节点仅支持同步生成，请移除异步参数。")
+        params.pop("async", None)
+        params.pop("async_mode", None)
+        parameter_sources = _image_parameter_references(params)
+        runtime = get_runtime()
+        client = runtime.client(profile_id)
+        _interrupt()
+        sources = await media.encode_inputs(image=image, mask=mask, references=references)
+        sources = await _materialize_image_references(client, runtime, [*sources, *parameter_sources])
+        operation = "image-edit" if any(source.kind == "image" for source in sources) else "image-generation"
+        protocol = get_protocol(operation)
+        path, body, files, query = await prepare_request(client, protocol, model, prompt, params, sources)
+        await validate_request(client, model, protocol, body, files, apply_defaults=True)
+        _interrupt()
+        response = await client.request("POST", path, body=body, files=files or None, query=query or None, stream=False)
+        decoded = await media.decode_response(response, client, _output_dir())
+        if decoded.get("images") is None:
+            if decoded.get("files"):
+                raise ValueError("图片尺寸不一致或响应没有可用的图片张量，请分别生成；原文件已保留。")
+            raise ValueError("同步图片接口未返回可用图片；请确认模型支持同步图片生成。")
+        url = next((client.base_url + value if value.startswith("/") else value
+                    for value in decoded.get("urls", []) if value.startswith(("http://", "https://", "/"))), "")
+        return io.NodeOutput(decoded["images"], url, decoded.get("json"))
 
 
 class EasyAPIVideo(OperationNode):
@@ -566,6 +750,7 @@ class EasyAPIVideo(OperationNode):
         return schema
 
     @classmethod
+    @native_progress
     async def execute(cls, profile_id="", model="", prompt="", params_json="{}", operation="video-generation",
                       wait_for_result=True, timeout=1800, mode="auto", references=None, **slots):
         if operation != "video-generation":
@@ -695,6 +880,7 @@ class TaskNode(io.ComfyNode):
         return float("nan")
 
     @classmethod
+    @native_progress
     async def execute(cls, profile_id="", task_id="", operation="video-generation", timeout=1800, task=None):
         runtime = get_runtime()
         handle = copy.deepcopy(task) if task else runtime.tasks.get(task_id, profile_id or None)
@@ -743,6 +929,7 @@ class EasyAPIResultDownload(io.ComfyNode):
         return float("nan")
 
     @classmethod
+    @native_progress
     async def execute(cls, profile_id="", params_json="{}", task_id="", task=None, result=None):
         runtime = get_runtime()
         handle = task or (runtime.tasks.get(task_id, profile_id or None) if task_id else None)

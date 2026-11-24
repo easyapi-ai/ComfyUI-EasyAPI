@@ -34,9 +34,12 @@ function mediaFacts(inputs, params, operation) {
   // Unified video execution replaces inline references when media comes from graph links.
   const inline = operation === "video-generation" && (linked.has("references") || Object.values(linkedKinds).some(Boolean)) ? {} : params;
   const references = inline.input_references;
-  const referenceTypes = Array.isArray(references) ? references.map((reference) => reference?.type ??
-    (typeof reference?.role === "string" ? reference.role.split("_").at(-1) : undefined)) : [];
-  const grouped = linked.has("references") || (references != null && !Array.isArray(references)) ||
+  const imageOnly = ["image-generation", "image-edit"].includes(operation);
+  const referenceList = references == null ? [] : Array.isArray(references) ? references : imageOnly ? [references] : [];
+  const referenceTypes = referenceList.map((reference) => reference?.kind ?? reference?.type ??
+    (typeof reference?.role === "string" ? reference.role.split("_").at(-1) :
+      imageOnly && (typeof reference === "string" ? reference.trim() : reference?.url || reference?.path || reference?.image_url) ? "image" : undefined));
+  const grouped = linked.has("references") || (references != null && !Array.isArray(references) && !imageOnly) ||
     referenceTypes.some((type) => !["image", "video", "audio"].includes(type));
   const result = {};
   for (const [kind, connected] of Object.entries(linkedKinds)) {

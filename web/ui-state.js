@@ -1,6 +1,129 @@
 // Pure state helpers shared by both Comfy renderers. Never persist credentials.
 export const clone = (value) => JSON.parse(JSON.stringify(value));
 export const draftKey = (profile, model, operation) => JSON.stringify([profile || "", model || "", operation || ""]);
+const suppliedImage = (value) => typeof value === "string" ? Boolean(value.trim()) :
+  Array.isArray(value) ? value.some(suppliedImage) : Boolean(value && typeof value === "object" &&
+    [value.url, value.path, value.image_url].some(suppliedImage));
+export function inferImageOperation(inputs = [], params = {}) {
+  const linked = inputs.some((input) => input.link != null && ["image", "references"].includes(input.name));
+  const references = params.input_references;
+  const referenceImage = (entry) => typeof entry === "string" ? suppliedImage(entry) : entry && typeof entry === "object" &&
+    !["audio", "video", "mask"].includes(entry.kind || entry.type) && suppliedImage(entry);
+  return linked || suppliedImage(params.image) || suppliedImage(params.images) ||
+    (Array.isArray(references) ? references.some(referenceImage) : referenceImage(references))
+    ? "image-edit" : "image-generation";
+}
+
+export const IMAGE_LAYOUT_VERSION = 2;
+const IMAGE_DEFAULT_OUTPUT_LABELS = new Set(["STRING", "Text", "text", "文本", "文字", "JSON", "EASYAPI_JSON", "IMAGE", "Images", "Image", "image", "图片", "圖像", "圖片", "url", "URL", "response", "Response", "响应", "回應"]);
+function imageOutputSlot(output, name, type, index) {
+  const slot = { ...output, name, type, slot_index: index };
+  delete slot.localized_name;
+  if (IMAGE_DEFAULT_OUTPUT_LABELS.has(slot.label)) delete slot.label;
+  return slot;
+}
+export function legacyImageLayout(node) {
+  return node?.type === "EasyAPIImages" && node.outputs?.length >= 8 &&
+    node.outputs[0]?.type === "STRING" && node.outputs[1]?.type === "EASYAPI_JSON" && node.outputs[2]?.type === "IMAGE";
+}
+// Migrate the serialized graph before LiteGraph restores slots and links. Slot 2 used
+// to be IMAGE; leaving it untouched would silently wire it into the new JSON output.
+export function migrateImageWorkflow(graph) {
+  const report = { nodes: 0, disconnected: 0 };
+  const seen = new Set();
+  const visit = (scope) => {
+    if (!scope || typeof scope !== "object" || seen.has(scope)) return;
+    seen.add(scope);
+    const nodes = Array.isArray(scope.nodes) ? scope.nodes : [];
+    const migrated = new Map();
+    for (const node of nodes) {
+      if (node?.type === "EasyAPIImages" && node.outputs?.length === 3 &&
+        node.outputs[0]?.type === "IMAGE" && node.outputs[1]?.type === "STRING" && node.outputs[2]?.type === "EASYAPI_JSON") {
+        node.outputs = [imageOutputSlot(node.outputs[0], "image", "IMAGE", 0),
+          imageOutputSlot(node.outputs[1], "url", "STRING", 1), imageOutputSlot(node.outputs[2], "响应", "EASYAPI_JSON", 2)];
+      }
+      if (!legacyImageLayout(node)) continue;
+      const oldInputs = node.inputs || [];
+      const inputs = oldInputs.filter((input) => !["operation", "wait_for_result", "timeout", "audio", "video"].includes(input.name));
+      migrated.set(String(node.id), { node, oldInputs, inputs });
+      node.outputs = [
+        { ...imageOutputSlot(node.outputs[2], "image", "IMAGE", 0), links: [] },
+        { name: "url", type: "STRING", slot_index: 1, links: [] },
+        { ...imageOutputSlot(node.outputs[1], "响应", "EASYAPI_JSON", 2), links: [] },
+      ];
+      node.inputs = inputs;
+      if (Array.isArray(node.widgets_values)) {
+        const values = node.widgets_values;
+        // Some frontend versions serialized the custom DOM control as a leading
+        // empty value. Named values are authoritative; otherwise identify the
+        // old operation instead of assuming the controls never occupied a slot.
+        const operations = new Set(["image-generation", "image-edit", "image-task", "image-task-edit"]);
+        const offset = operations.has(values[2]) ? 0 : operations.has(values[3]) ? 1 : 0;
+        const named = node.widgets_values_named || {};
+        const positions = { profile_id: 0, model: 1, prompt: 3, params_json: 4 };
+        node.widgets_values = Object.entries(positions).map(([name, index]) => Object.hasOwn(named, name) ? named[name] : values[index + offset]);
+        node.widgets_values_named = Object.fromEntries(Object.keys(positions).map((name, index) => [name, node.widgets_values[index]]));
+      }
+      for (const name of ["widgets_values_named", "widgets_values"]) {
+        const values = node[name];
+        if (values && !Array.isArray(values) && typeof values === "object") {
+          for (const field of ["operation", "wait_for_result", "timeout", "easyapi_controls"]) delete values[field];
+        }
+      }
+      node.properties ??= {};
+      node.properties.easyapi_image_layout = IMAGE_LAYOUT_VERSION;
+      ++report.nodes;
+    }
+    if (migrated.size && Array.isArray(scope.links)) {
+      const removed = new Set();
+      const kept = [];
+      for (const link of scope.links) {
+        const array = Array.isArray(link);
+        const id = array ? link[0] : link.id;
+        const origin = String(array ? link[1] : link.origin_id);
+        const target = String(array ? link[3] : link.target_id);
+        const source = migrated.get(origin), destination = migrated.get(target);
+        let drop = false;
+        if (source) {
+          const oldSlot = array ? link[2] : link.origin_slot;
+          const newSlot = ({ 2: 0, 1: 2 })[oldSlot];
+          if (newSlot === undefined) drop = true;
+          else {
+            if (array) { link[2] = newSlot; link[5] = source.node.outputs[newSlot].type; }
+            else { link.origin_slot = newSlot; link.type = source.node.outputs[newSlot].type; }
+          }
+        }
+        if (destination) {
+          const oldSlot = array ? link[4] : link.target_slot;
+          const oldInput = destination.oldInputs[oldSlot];
+          const newSlot = destination.inputs.findIndex((input) => input === oldInput);
+          if (newSlot < 0) drop = true;
+          else if (array) link[4] = newSlot;
+          else link.target_slot = newSlot;
+        }
+        if (drop) {
+          removed.add(String(id)); ++report.disconnected;
+          const owner = source || destination;
+          owner.node.properties.easyapi_image_disconnected = (owner.node.properties.easyapi_image_disconnected || 0) + 1;
+        }
+        else {
+          kept.push(link);
+          if (source) source.node.outputs[array ? link[2] : link.origin_slot].links.push(id);
+        }
+      }
+      scope.links = kept;
+      for (const node of nodes) {
+        for (const input of node.inputs || []) if (removed.has(String(input.link))) input.link = null;
+        for (const output of node.outputs || []) if (Array.isArray(output.links)) output.links = output.links.filter((id) => !removed.has(String(id)));
+      }
+      for (const reroute of scope.reroutes || []) if (Array.isArray(reroute.linkIds)) reroute.linkIds = reroute.linkIds.filter((id) => !removed.has(String(id)));
+    }
+    for (const child of scope.definitions?.subgraphs || []) visit(child);
+    for (const child of scope.subgraphs || []) visit(child);
+  };
+  visit(graph);
+  return report;
+}
 export function parseParams(raw) {
   const result = typeof raw === "string" ? JSON.parse(raw || "{}") : clone(raw || {});
   if (!result || Array.isArray(result) || typeof result !== "object") throw new Error("objectRequired");

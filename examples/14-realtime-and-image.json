@@ -128,20 +128,6 @@
           "link": null
         },
         {
-          "localized_name": "audio",
-          "name": "audio",
-          "shape": 7,
-          "type": "AUDIO",
-          "link": null
-        },
-        {
-          "localized_name": "video",
-          "name": "video",
-          "shape": 7,
-          "type": "VIDEO",
-          "link": null
-        },
-        {
           "localized_name": "references",
           "name": "references",
           "shape": 7,
@@ -167,15 +153,6 @@
           "link": null
         },
         {
-          "localized_name": "operation",
-          "name": "operation",
-          "type": "COMBO",
-          "widget": {
-            "name": "operation"
-          },
-          "link": null
-        },
-        {
           "localized_name": "prompt",
           "name": "prompt",
           "type": "STRING",
@@ -192,99 +169,46 @@
             "name": "params_json"
           },
           "link": null
-        },
-        {
-          "localized_name": "wait_for_result",
-          "name": "wait_for_result",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "wait_for_result"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "timeout",
-          "name": "timeout",
-          "type": "INT",
-          "widget": {
-            "name": "timeout"
-          },
-          "link": null
         }
       ],
       "outputs": [
         {
-          "localized_name": "文本",
-          "name": "文本",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "localized_name": "JSON",
-          "name": "JSON",
-          "type": "EASYAPI_JSON",
-          "links": null
-        },
-        {
-          "localized_name": "图片",
-          "name": "图片",
+          "localized_name": "image",
+          "name": "image",
           "type": "IMAGE",
           "links": [
             3
           ]
         },
         {
-          "localized_name": "蒙版",
-          "name": "蒙版",
-          "type": "MASK",
+          "name": "url",
+          "localized_name": "url",
+          "type": "STRING",
           "links": null
         },
         {
-          "localized_name": "音频",
-          "name": "音频",
-          "type": "AUDIO",
-          "links": null
-        },
-        {
-          "localized_name": "视频",
-          "name": "视频",
-          "type": "VIDEO",
-          "links": null
-        },
-        {
-          "localized_name": "任务",
-          "name": "任务",
-          "type": "EASYAPI_TASK",
-          "links": null
-        },
-        {
-          "localized_name": "素材",
-          "name": "素材",
-          "type": "EASYAPI_MEDIA",
+          "localized_name": "响应",
+          "name": "响应",
+          "type": "EASYAPI_JSON",
           "links": null
         }
       ],
       "properties": {
-        "Node name for S&R": "EasyAPIImages"
+        "Node name for S&R": "EasyAPIImages",
+        "easyapi_image_layout": 2
       },
       "widgets_values": [
         "mock",
         "mock-image",
-        "image-generation",
         "离线图片验证",
         "{\"size\":\"64x64\",\"seed\":0,\"watermark\":false}",
-        true,
-        60,
         ""
       ],
       "widgets_values_named": {
         "profile_id": "mock",
         "model": "mock-image",
-        "operation": "image-generation",
         "prompt": "离线图片验证",
         "params_json": "{\"size\":\"64x64\",\"seed\":0,\"watermark\":false}",
-        "wait_for_result": true,
-        "timeout": 60,
         "easyapi_controls": ""
       }
     },
@@ -390,7 +314,7 @@
     [
       3,
       2,
-      2,
+      0,
       3,
       1,
       "IMAGE"

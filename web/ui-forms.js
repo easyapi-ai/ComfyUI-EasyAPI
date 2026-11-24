@@ -3,7 +3,8 @@ import { atPath, clone, writeAt } from "./ui-state.js";
 const OMIT = new Set(["model", "prompt", "messages", "contents", "content", "input", "api_key", "authorization", "token", "input_reference", "input_references", "image", "images", "image_url", "audio", "audio_url", "video", "video_url", "mask", "file", "files", "base64Array"]);
 const COMMON = ["stream", "size", "resolution", "aspect_ratio", "width", "height", "duration", "seconds", "fps", "seed", "n",
   "generate_audio", "return_last_frame", "watermark", "quality", "style", "negative_prompt", "voice", "instructions",
-  "speed", "speech_rate", "language", "response_format", "temperature", "max_tokens", "max_output_tokens", "steps", "guidance_scale"];
+  "speed", "speech_rate", "language", "response_format", "output_format", "output_compression", "compression", "background",
+  "temperature", "max_tokens", "max_output_tokens", "steps", "guidance_scale"];
 const make = (tag, props = {}, ...children) => {
   const element = document.createElement(tag);
   Object.assign(element, props);
@@ -14,6 +15,43 @@ const primitiveType = (definition) => Array.isArray(definition.type) ? definitio
 const optionText = (value) => typeof value === "string" ? value : JSON.stringify(value);
 const initialItem = (definition) => definition.default !== undefined ? clone(definition.default) : ({ object: {}, array: [], boolean: false, integer: 0, number: 0 }[primitiveType(definition)] ?? "");
 let nextFieldId = 0;
+
+function imageSizeParts(value) {
+  const match = typeof value === "string" && value.match(/^\s*(\d+)\s*[xX*×]\s*(\d+)\s*$/);
+  if (!match) return null;
+  const width = Number(match[1]), height = Number(match[2]);
+  return Number.isSafeInteger(width) && Number.isSafeInteger(height) ? { width, height } : null;
+}
+
+export function validateImageSize(definition, value) {
+  const invalid = (reason) => ({ ok: false, value, reason });
+  const valid = (next) => ({ ok: true, value: next, reason: "" });
+  if (typeof value !== "string") return invalid("invalid_size");
+  const raw = value.trim(), dimensions = imageSizeParts(raw);
+  const normalized = dimensions ? `${dimensions.width}x${dimensions.height}` : raw;
+  const spec = definition["x-size-spec"] || {};
+  for (const option of definition.enum || []) {
+    if (typeof option !== "string") continue;
+    const parts = imageSizeParts(option);
+    const comparable = parts ? `${parts.width}x${parts.height}` : option.trim();
+    if (normalized.toLowerCase() === comparable.toLowerCase()) return valid(comparable.toLowerCase() === "auto" ? "auto" : parts ? comparable : option);
+  }
+  if (raw.toLowerCase() === "auto") {
+    return spec.allow_auto === true || String(definition.default).toLowerCase() === "auto" ? valid("auto") : invalid("auto_not_allowed");
+  }
+  if (spec.allow_custom !== true) return invalid("custom_not_allowed");
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0 || !Number.isSafeInteger(dimensions.width * dimensions.height)) return invalid("invalid_size");
+  const { width, height } = dimensions;
+  for (const [name, actual, minimum] of [["min_width", width, true], ["max_width", width, false], ["min_height", height, true], ["max_height", height, false]]) {
+    if (Number.isFinite(spec[name]) && (minimum ? actual < spec[name] : actual > spec[name])) return invalid(name);
+  }
+  if (Number.isSafeInteger(spec.multiple_of) && spec.multiple_of > 0 && (width % spec.multiple_of || height % spec.multiple_of)) return invalid("multiple_of");
+  const pixels = width * height, ratio = width / height;
+  for (const [name, actual, minimum] of [["min_pixels", pixels, true], ["max_pixels", pixels, false], ["min_ratio", ratio, true], ["max_ratio", ratio, false]]) {
+    if (Number.isFinite(spec[name]) && (minimum ? actual < spec[name] : actual > spec[name])) return invalid(name);
+  }
+  return valid(normalized);
+}
 
 function stepButton(text, label, className = "ea-step") {
   const button = make("button", { type: "button", className, textContent: text, title: label });
@@ -121,7 +159,78 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
     reset.setAttribute("aria-label", t("useDefault") + " · " + label);
     heading.append(reset);
 
-    if (type === "object" && definition.properties && !definition.oneOf && !definition.anyOf && depth < 4) {
+    if (path.length === 1 && key === "size" && type === "string" && definition["x-size-spec"]?.allow_custom === true) {
+      const select = make("select", { className: "ea-size-preset", id: "easyapi-field-" + ++nextFieldId });
+      select.dataset.path = JSON.stringify(path);
+      const presets = [];
+      for (const option of [...(Array.isArray(options) ? options : []), definition.default]) {
+        const result = validateImageSize(definition, option);
+        if (result.ok && !presets.includes(result.value)) presets.push(result.value);
+      }
+      if (definition["x-size-spec"].allow_auto === true && !presets.includes("auto")) presets.push("auto");
+      select.append(make("option", { value: "" }, definition.default === undefined ? t("optionalValue") : t("sizeModelDefault", { value: definition.default })),
+        ...presets.map((option) => make("option", { value: option }, option)), make("option", { value: "__custom" }, t("sizeCustom")));
+      const width = make("input", { type: "number", className: "ea-size-width", min: "1", step: "1", placeholder: t("sizeWidth") });
+      const height = make("input", { type: "number", className: "ea-size-height", min: "1", step: "1", placeholder: t("sizeHeight") });
+      width.setAttribute("aria-label", t("sizeWidth")); height.setAttribute("aria-label", t("sizeHeight"));
+      const spec = definition["x-size-spec"];
+      for (const [field, axis] of [[width, "width"], [height, "height"]]) {
+        if (spec["min_" + axis] !== undefined) field.min = spec["min_" + axis];
+        if (spec["max_" + axis] !== undefined) field.max = spec["max_" + axis];
+        if (spec.multiple_of !== undefined) field.step = spec.multiple_of;
+      }
+      const dimensions = make("div", { className: "ea-size-dimensions" }, width, make("span", { textContent: "×", ariaHidden: "true" }), height);
+      const raw = make("input", { className: "ea-size-raw", type: "text" });
+      raw.setAttribute("aria-label", label);
+      const error = make("small", { className: "ea-size-error ea-error", id: "easyapi-size-error-" + ++nextFieldId, hidden: true });
+      error.setAttribute("role", "status");
+      for (const field of [width, height, raw]) field.setAttribute("aria-describedby", error.id);
+      const showError = (reason = "") => {
+        const message = reason ? t("sizeError." + reason, spec) : "";
+        error.textContent = message; error.hidden = !message;
+        for (const field of [width, height, raw]) { field.setCustomValidity?.(message); field.setAttribute("aria-invalid", String(Boolean(message))); }
+      };
+      const display = () => {
+        const saved = atPath(getValue(), path), effective = saved === undefined ? definition.default : saved;
+        const checked = validateImageSize(definition, effective), parts = imageSizeParts(effective);
+        select.value = saved === undefined ? "" : checked.ok && presets.includes(checked.value) ? checked.value : "__custom";
+        dimensions.hidden = select.value !== "__custom";
+        raw.hidden = saved === undefined || Boolean(parts) || checked.ok;
+        if (!raw.hidden) { raw.value = String(saved); dimensions.hidden = true; }
+        width.value = saved !== undefined && parts ? String(parts.width) : "";
+        height.value = saved !== undefined && parts ? String(parts.height) : "";
+        const defaults = imageSizeParts(definition.default);
+        width.placeholder = defaults ? String(defaults.width) : t("sizeWidth");
+        height.placeholder = defaults ? String(defaults.height) : t("sizeHeight");
+        showError(saved !== undefined && !checked.ok ? checked.reason : "");
+        reset.hidden = !canReset(saved);
+      };
+      const accept = (next) => {
+        const result = validateImageSize(definition, next);
+        if (!result.ok) { showError(result.reason); return; }
+        commit(path, result.value); display();
+      };
+      select.addEventListener("change", () => {
+        showError(); raw.hidden = true;
+        if (select.value === "__custom") { dimensions.hidden = false; onResize(); return; }
+        if (select.value === "") { resetValue(); display(); }
+        else accept(select.value);
+        onResize();
+      });
+      const customChange = () => {
+        if (!width.value || !height.value) { showError("invalid_size"); return; }
+        accept(`${width.value}x${height.value}`);
+      };
+      width.addEventListener("change", customChange); height.addEventListener("change", customChange);
+      raw.addEventListener("change", () => accept(raw.value));
+      reset.addEventListener("click", () => { resetValue(); display(); onResize(); });
+      const controlLabel = make("label", { htmlFor: select.id }, labelText);
+      name.replaceChildren(controlLabel, ...(help ? [help.element] : []));
+      if (help) select.setAttribute("aria-describedby", help.id);
+      wrapper.className += " ea-field-inline";
+      wrapper.append(make("div", { className: "ea-size-control" }, select, dimensions, raw, error));
+      display();
+    } else if (type === "object" && definition.properties && !definition.oneOf && !definition.anyOf && depth < 4) {
       reset.addEventListener("click", () => { resetValue(); render(); });
       const body = make("div", { className: "ea-object-fields" });
       body.addEventListener("change", () => { reset.hidden = !canReset(atPath(getValue(), path)); });

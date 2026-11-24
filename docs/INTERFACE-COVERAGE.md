@@ -7,7 +7,7 @@
 | 节点 ID | 用户用途 | 上游接口或行为 |
 |---|---|---|
 | `EasyAPIChat` | 对话与多模态 | 下方对话操作 |
-| `EasyAPIImages` | 图片生成、编辑、异步任务 | 下方图片操作 |
+| `EasyAPIImages` | 同步文生图、图生图 | 根据参考图片自动选择下方两种图片接口 |
 | `EasyAPIVideo` | 视频与多种参考素材 | 只提交 `POST /v1/videos` |
 | `EasyAPISpeech` | 语音合成 | `POST /v1/audio/speech` |
 | `EasyAPITranscribe` | 音频转录与翻译 | `POST /v1/audio/transcriptions`、`/v1/audio/translations` |
@@ -35,10 +35,10 @@
 | `gemini-stream` | POST | `/v1beta/models/{model}:streamGenerateContent` | SSE |
 | `image-generation` | POST | `/v1/images/generations` | JSON |
 | `image-edit` | POST | `/v1/images/edits` | multipart |
-| `image-task` | POST | `/v1/images/tasks` | JSON / 异步任务 |
-| `image-task-edit` | POST | `/v1/images/tasks` | multipart / 异步任务 |
 
-图片菜单不提供旧 `/v1/edits` 别名，也不把查询混入生成操作；已有任务使用独立任务节点。
+图片节点仅输出 `image`、`url`、`响应`。无参考图片时使用同步文生图接口；连接图片、图片参考组或在参数中提供图片 URL 时，自动选择同步图生图接口。蒙版必须搭配参考图片，音频与视频不属于图片输入。不显示手动操作、异步提交或等待选项。`url` 为首个真实上游 URL；纯 base64 响应没有上游 URL 时为空，完整响应保留全部结果。
+
+图片节点不调用异步 `/v1/images/tasks`，不提供旧 `/v1/edits` 别名；已有任务仍可由独立任务节点查询和恢复。加载旧工作流会将旧图片输出连线迁到 `image`、旧 JSON 连线迁到 `响应`，其他已移除输出断开并提示。
 
 ## 视频
 

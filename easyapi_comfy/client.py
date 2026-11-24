@@ -82,7 +82,8 @@ def normalize_parameter_schema(value):
     if not isinstance(value, dict):
         return value
     result = copy.deepcopy(value)
-    for old, new in (("min", "minimum"), ("max", "maximum"), ("min_length", "minLength"), ("max_length", "maxLength")):
+    for old, new in (("min", "minimum"), ("max", "maximum"), ("min_length", "minLength"), ("max_length", "maxLength"),
+                     ("size_spec", "x-size-spec")):
         if old in result and new not in result:
             result[new] = result[old]
     properties = result.get("properties")
@@ -99,6 +100,39 @@ def normalize_parameter_schema(value):
             result["required"] = required
     if isinstance(result.get("items"), dict):
         result["items"] = normalize_parameter_schema(result["items"])
+    return result
+
+
+_IMAGE_CREDENTIAL_FIELDS = {"api_key", "apikey", "authorization", "token", "access_token"}
+_IMAGE_MANAGED_FIELDS = {
+    "model", "prompt", "messages", "contents", "content", "input", "input_reference", "input_references", "image", "images", "image_url",
+    "image_urls", "input_image", "audio", "audio_url", "video", "video_url", "reference_audio",
+    "reference_video", "references", "mask", "file", "files", "base64array", "stream", "async", "async_mode",
+}
+
+
+def _image_form_schema(schema, *, top_level=True):
+    """Keep the image request contract separate from editable model parameters."""
+    result = copy.deepcopy(schema)
+    if not isinstance(result, dict):
+        return result
+    if isinstance(result.get("properties"), dict):
+        properties = {name: _image_form_schema(value, top_level=False) for name, value in result["properties"].items()
+                      if name.lower().replace("-", "_") not in _IMAGE_CREDENTIAL_FIELDS
+                      and (not top_level or name.lower().replace("-", "_") not in _IMAGE_MANAGED_FIELDS) and not name.startswith("__")
+                      and not (isinstance(value, dict) and value.get("format") == "binary")}
+        result["properties"] = properties
+        result["required"] = [name for name in result.get("required", []) if name in properties]
+    if isinstance(result.get("items"), dict):
+        result["items"] = _image_form_schema(result["items"], top_level=False)
+    return result
+
+
+def _merge_image_schema(original, fallback):
+    """Fill missing model options while retaining documented upload requirements."""
+    result = {**copy.deepcopy(original), **copy.deepcopy(fallback)}
+    result["properties"] = {**copy.deepcopy(fallback.get("properties", {})), **copy.deepcopy(original.get("properties", {}))}
+    result["required"] = list(dict.fromkeys([*original.get("required", []), *fallback.get("required", [])]))
     return result
 
 
@@ -550,6 +584,8 @@ class EasyAPIClient:
                             if count > max_bytes:
                                 raise EasyAPIError("Downloaded media exceeded the file limit")
                             target.write(chunk)
+                    if count == 0:
+                        raise EasyAPIError("Downloaded media is empty; the generated result may still be available at its result URL")
                     os.replace(temporary, destination)
                     return destination
             raise EasyAPIError("Too many result redirects")
@@ -777,6 +813,7 @@ class EasyAPIClient:
         if not refresh and cached and time.monotonic() - cached[0] < 300:
             return copy.deepcopy(cached[1])
         requested = get_protocol(operation) if operation else None
+        is_image = operation in {"image-generation", "image-edit"}
         result = {"model": model, "operation": operation, "locale": locale,
                   "request_schema": {"type": "object", "properties": {}, "additionalProperties": True},
                   "required": [], "source": "unavailable", "docs": None, "params": None,
@@ -811,9 +848,11 @@ class EasyAPIClient:
             schema = selected.get("request_schema") or docs.get("request_schema") or {}
             if schema.get("properties"):
                 result.update(request_schema=copy.deepcopy(schema), required=selected.get("required", schema.get("required", [])), source="docs")
+                if is_image and result["required"]:
+                    result["request_schema"]["required"] = list(dict.fromkeys([*schema.get("required", []), *result["required"]]))
         if entries and requested and endpoint is None and not relevant_variants:
             result["source"] = "docs-no-operation-match"
-        elif not result["request_schema"].get("properties"):
+        elif not result["request_schema"].get("properties") or is_image and not _image_form_schema(result["request_schema"])["properties"]:
             # Prefer the endpoint's exact key (api-video/openai/etc.) to the UI
             # operation id when requesting platform endpoint_params overrides.
             endpoint_key = (endpoint or {}).get("key") or (endpoint or {}).get("type") or operation
@@ -826,11 +865,14 @@ class EasyAPIClient:
                 matches = not requested or not documented or any(_entry_matches(value, requested) for value in documented)
                 schema = data.get("request") or data.get("request_schema") or {}
                 if matches and schema.get("properties") and (not variant or selected is not None):
+                    if is_image:
+                        schema = _merge_image_schema(result["request_schema"], schema)
                     result.update(request_schema=copy.deepcopy(schema), required=schema.get("required", []),
                                   source="schema", matched=True, schema_operation=endpoint_key)
                 elif documented and not matches:
                     result["source"] = "schema-no-operation-match"
-            if not result["request_schema"].get("properties") and result["source"] not in {"docs-no-operation-match", "schema-no-operation-match"}:
+            needs_detail = not result["request_schema"].get("properties") or is_image and not _image_form_schema(result["request_schema"])["properties"]
+            if needs_detail and result["source"] not in {"docs-no-operation-match", "schema-no-operation-match"}:
                 detail = await self._metadata("/pricing/detail", query={"model_name": model}, locale=locale, refresh=refresh)
                 if isinstance(detail, dict):
                     params = detail.get("params") or {}
@@ -844,11 +886,17 @@ class EasyAPIClient:
                     props.update(override.get("properties") or {})
                     expected = {"text": "chat", "image": "image-generation", "video": "video-generation", "audio": "audio-speech"}.get(category)
                     matched = not operation or bool(override) or operation == expected or result["matched"]
+                    documented = _endpoint_entries(detail)
+                    if is_image and documented and not any(_entry_matches(value, requested) for value in documented):
+                        matched = False
                     if props and matched and not variant:
                         normalized = normalize_parameter_schema({"type": "object", "properties": props})
+                        if is_image:
+                            normalized = _merge_image_schema(result["request_schema"], normalized)
                         result.update(request_schema=normalized, required=normalized.get("required", []), source="detail",
                                       matched=True, schema_operation=operation)
-        schema, repairs = _schema_corrections(model, operation, result["request_schema"])
+        request_schema = normalize_parameter_schema(result["request_schema"]) if is_image else result["request_schema"]
+        schema, repairs = _schema_corrections(model, operation, request_schema)
         result.update(request_schema=schema, required=list(schema.get("required", result["required"])), corrections=repairs)
         if result["required"] and "required" not in schema:
             schema["required"] = list(result["required"])
@@ -860,8 +908,12 @@ class EasyAPIClient:
                 result.update(request_schema=copy.deepcopy(active["request_schema"]), required=list(active["required"]),
                               selected_variant=variant, matched=True)
         result["declared"] = bool(result["request_schema"].get("properties"))
-        result["fallback"] = "basic-and-advanced-json" if not result["declared"] or not result["matched"] else None
-        if result["fallback"]:
+        if is_image:
+            result["form_schema"] = _image_form_schema(result["request_schema"])
+            result["fallback"] = "advanced-json" if not result["matched"] or not result["form_schema"]["properties"] else None
+        else:
+            result["fallback"] = "basic-and-advanced-json" if not result["declared"] or not result["matched"] else None
+        if result["fallback"] == "basic-and-advanced-json":
             result["form_schema"] = basic_form_schema(operation)
         self._cache[cache_key] = time.monotonic(), copy.deepcopy(result)
         return result
