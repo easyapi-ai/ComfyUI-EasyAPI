@@ -90,8 +90,11 @@ export class PromptEditor {
     this.toolbar.append(this.launcher, element("div", { className: "ea-prompt-tool-rail" }, this.toolActions));
     this.body = element("div", { className: "ea-prompt-popover-body" });
     this.closeButton = button("×", () => this.close(true), "ea-prompt-tool ea-prompt-close");
+    this.popupHeading = element("div", { className: "ea-prompt-popover-heading" }, this.heading, this.closeButton);
     this.popup = element("section", { id: "easyapi-prompt-tools-" + id, className: "easyapi-panel ea-prompt-popover", hidden: true, role: "dialog" },
-      element("div", { className: "ea-prompt-popover-heading" }, this.heading, this.closeButton), this.body);
+      this.popupHeading, this.body);
+    this.popupHeading.addEventListener("pointerdown", (event) => this.startWanDrag(event));
+    this.popupHeading.addEventListener("lostpointercapture", (event) => this.stopWanDrag(event));
     this.popup.setAttribute("aria-labelledby", this.heading.id);
     this.nativePopover = typeof this.popup.showPopover === "function";
     if (this.nativePopover) {
@@ -174,6 +177,14 @@ export class PromptEditor {
     this.onScroll = (event) => {
       if (!event.target?.nodeType || !this.popup.contains(event.target)) this.position();
     };
+    this.onWanDragMove = (event) => {
+      const drag = this.wanDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      event.preventDefault(); event.stopPropagation();
+      this.wanPosition = { left: drag.left + event.clientX - drag.x, top: drag.top + event.clientY - drag.y };
+      this.position();
+    };
+    this.onWanDragEnd = (event) => this.stopWanDrag(event);
     this.translate();
   }
 
@@ -415,6 +426,10 @@ export class PromptEditor {
     window.addEventListener("resize", this.onResize);
     window.addEventListener("scroll", this.onScroll, true);
     this.position();
+    if (mode === "wan" && typeof ResizeObserver !== "undefined") {
+      this.popupObserver ||= new ResizeObserver(() => { if (this.mode === "wan") this.position(); });
+      this.popupObserver.observe(this.popup);
+    }
     this.syncButtons();
     (mode === "tags" ? this.tagSearch : this.closeButton).focus({ preventScroll: true });
   }
@@ -423,11 +438,16 @@ export class PromptEditor {
     const anchor = this.root.getBoundingClientRect();
     const margin = 8;
     if (this.mode === "wan") {
-      this.popup.style.left = Math.max(margin, (window.innerWidth - this.popup.offsetWidth) / 2) + "px";
-      this.popup.style.top = margin + "px";
-      this.popup.style.bottom = "auto";
       this.popup.style.height = "auto";
       this.popup.style.maxHeight = Math.max(0, Math.min(760, window.innerHeight - margin * 2)) + "px";
+      const width = this.popup.offsetWidth || 0, height = this.popup.offsetHeight || 0;
+      const clamp = (value, maximum) => Math.min(Math.max(margin, maximum), Math.max(margin, value));
+      const left = clamp(this.wanPosition?.left ?? (window.innerWidth - width) / 2, window.innerWidth - width - margin);
+      const top = clamp(this.wanPosition?.top ?? (window.innerHeight - height) / 2, window.innerHeight - height - margin);
+      if (this.wanPosition) this.wanPosition = { left, top };
+      this.popup.style.left = left + "px";
+      this.popup.style.top = top + "px";
+      this.popup.style.bottom = "auto";
       return;
     }
     this.popup.style.height = "auto";
@@ -444,8 +464,37 @@ export class PromptEditor {
     this.popup.style.maxHeight = Math.min(400, openBelow ? below : above) + "px";
   }
 
+  startWanDrag(event) {
+    if (this.mode !== "wan" || event.button !== 0 || event.isPrimary === false ||
+      event.target?.closest?.("button,input,select,textarea,a,[role=button]")) return;
+    this.stopWanDrag();
+    event.preventDefault(); event.stopPropagation();
+    const rect = this.popup.getBoundingClientRect();
+    this.wanDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+    this.wanPosition = { left: rect.left, top: rect.top };
+    this.popup.dataset.dragging = "true";
+    window.addEventListener("pointermove", this.onWanDragMove);
+    window.addEventListener("pointerup", this.onWanDragEnd);
+    window.addEventListener("pointercancel", this.onWanDragEnd);
+    try { this.popupHeading.setPointerCapture?.(event.pointerId); } catch { /* Window listeners also track the drag. */ }
+  }
+
+  stopWanDrag(event) {
+    const drag = this.wanDrag;
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    this.wanDrag = null;
+    delete this.popup.dataset.dragging;
+    window.removeEventListener("pointermove", this.onWanDragMove);
+    window.removeEventListener("pointerup", this.onWanDragEnd);
+    window.removeEventListener("pointercancel", this.onWanDragEnd);
+    try { this.popupHeading.releasePointerCapture?.(drag.pointerId); } catch { /* Capture may already have ended. */ }
+  }
+
   close(restoreFocus = false) {
     if (!this.mode) return;
+    this.stopWanDrag();
+    this.wanPosition = null;
+    this.popupObserver?.disconnect();
     const trigger = this.buttons[this.mode];
     this.mode = null;
     this.modelRequest?.abort();

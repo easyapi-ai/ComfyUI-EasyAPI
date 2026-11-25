@@ -458,7 +458,7 @@
 .ea-wan-content {display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding-inline-end:4px}
 .ea-wan-content > * {flex-shrink:0}
 .ea-wan-footer {flex:none;border-top:1px solid var(--ea-line);padding-top:9px}
-.ea-wan-popover .ea-prompt-popover-heading {flex:none}
+.ea-wan-popover .ea-prompt-popover-heading {flex:none;cursor:move;touch-action:none;user-select:none}
 .ea-model-updates {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ea-model-updates:has(> :only-child:empty),.ea-model-updates:has(> :first-child:empty):has(> :last-child[hidden]) {display:none}
 .ea-prompt-popover .ea-model-updates button {flex:none;width:auto}

@@ -25,6 +25,7 @@ class Element {
     this.value = '';
     this.selectionStart = this.selectionEnd = 0;
     this.offsetWidth = 320;
+    this.offsetHeight = 320;
   }
   append(...children) {
     for (const child of children) {
@@ -221,7 +222,8 @@ const waitForCollapse = () => new Promise(resolve => setTimeout(resolve, 280));
     loadWanPanel:async()=>({WanTunerPanel:Tuner}) });
   document.body.append(wan.root);
   wan.open('wan');await tick();
-  assert.equal(wan.popup.style.top,'8px');
+  assert.equal(wan.popup.style.left,'290px');
+  assert.equal(wan.popup.style.top,'240px');
   assert.equal(wan.popup.style.height,'auto');
   assert.equal(wan.popup.style.maxHeight,'760px');
   assert.equal(wan.popup.style.bottom,'auto');
