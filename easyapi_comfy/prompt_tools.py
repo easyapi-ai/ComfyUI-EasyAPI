@@ -36,10 +36,10 @@ def _required_text(value, label, limit):
     return value
 
 
-async def prompt_models(runtime, profile_id, locale):
+async def prompt_models(runtime, profile_id, locale, *, refresh=False):
     profile = _required_text(profile_id, "Connection ID", 64)
     client = runtime.client(profile)
-    rows = await client.discover_models("text", "chat", locale=locale)
+    rows = await client.discover_models("text", "chat", locale=locale, refresh=refresh)
     compatible = (
         row for row in rows if row.get("operation_supported") is True
         or (row.get("category") == "text" and "chat" in row.get("operations", []))

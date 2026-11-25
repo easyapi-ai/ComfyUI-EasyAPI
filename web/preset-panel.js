@@ -8,8 +8,9 @@ function make(tag, props = {}, ...children) {
   return node;
 }
 export class PresetPanel {
-  constructor({ request, mutation, modelPicker, getOperations, onChanged = () => {} }) {
+  constructor({ request, mutation, modelPicker, getOperations, catalog, onChanged = () => {} }) {
     this.request = request; this.mutation = mutation; this.getOperations = getOperations; this.onChanged = onChanged;
+    this.catalog = catalog;
     this.presets = []; this.defaults = {}; this.params = {}; this.models = []; this.profiles = []; this.labels = [];
     this.model = ""; this.listSequence = 0; this.modelSequence = 0; this.schemaSequence = 0;
     this.root = make("section", { className: "ea-manager-view ea-presets", hidden: true });
@@ -18,6 +19,8 @@ export class PresetPanel {
     this.picker.input.disabled = true;
     this.modelField = make("div", {}, this.label("label", "model", { htmlFor: this.picker.input.id }), this.picker.root);
     this.notice = make("div", { className: "ea-status", role: "status" });
+    this.catalogStatus = make("span", { className: "ea-caption", role: "status" });
+    this.retryModels = this.action("retryModels", () => this.refreshModels(true)); this.retryModels.hidden = true;
     this.list = make("div", { className: "ea-preset-list" }); this.schema = make("div", { className: "ea-schema" });
     this.defaultCheck = make("input", { type: "checkbox" });
     this.jsonEditor = make("textarea", { rows: 7, spellcheck: false });
@@ -32,7 +35,8 @@ export class PresetPanel {
     this.operation.addEventListener("change", () => this.changeScope());
     this.root.append(this.label("p", "presetDescription", { className: "ea-caption" }), this.field("connection", this.profile),
       this.field("presetOperation", this.operation), this.list, this.action("newPreset", () => this.newPreset()),
-      this.field("presetName", this.name), this.modelField, this.notice, this.schema, this.jsonDetails,
+      this.field("presetName", this.name), this.modelField, this.notice,
+      make("div", { className: "ea-model-updates" }, this.catalogStatus, this.retryModels), this.schema, this.jsonDetails,
       make("label", { className: "ea-checkbox" }, this.defaultCheck, this.label("span", "makeDefaultPreset")),
       make("div", { className: "ea-row" }, this.saveButton, this.deleteButton));
     this.renderProfiles(""); this.syncOperations(); this.syncJSON(); this.updateDisabled();
@@ -53,11 +57,13 @@ export class PresetPanel {
   requiresModel() { return this.operations.find((operation) => operation.id === this.operation.value)?.hasModel !== false; }
   setProfiles(profiles, defaultId, preferred) {
     const current = this.profile.value;
+    const revision = this.profiles.find((row) => row.id === current)?.model_catalog_revision;
     this.profiles = profiles;
     const existing = [preferred, current].find((id) => profiles.some((profile) => profile.id === id));
     const next = selectProfile(existing, profiles, defaultId);
     this.renderProfiles(next);
     if (current !== next) this.changeScope();
+    else if (revision !== profiles.find((row) => row.id === next)?.model_catalog_revision) this.refreshModels();
   }
   renderProfiles(selected) {
     const options = this.profiles.map((profile) => make("option", { value: profile.id }, profile.name || profile.id));
@@ -113,7 +119,9 @@ export class PresetPanel {
     this.defaultCheck.checked = this.defaults[preset.operation] === preset.id; this.syncJSON();
     await this.refreshModels();
   }
-  async refreshModels() {
+  async refreshModels(refresh = false) {
+    this.modelUnsubscribe?.(); this.modelAbort?.abort();
+    this.modelAbort = new AbortController();
     const profile = this.profile.value, operation = this.operation.value;
     const sequence = ++this.modelSequence;
     const needsModel = this.requiresModel();
@@ -123,19 +131,44 @@ export class PresetPanel {
     this.updateDisabled();
     if (!profile || !operation) { this.showNotice(); return; }
     if (!needsModel) { this.model = ""; this.showNotice(t("toolModelManaged")); return; }
-    this.showNotice(t("loadingModels"));
-    try {
-      const data = await this.request(`/easyapi/models?${new URLSearchParams({ profile_id: profile, operation, locale: localeQuery() })}`);
-      if (this.destroyed || sequence !== this.modelSequence) return;
+    this.showNotice(t("loadingModels")); this.catalogStatus.textContent = ""; this.retryModels.hidden = true;
+    let applied, initialized = false;
+    const active = () => !this.destroyed && sequence === this.modelSequence && !this.modelAbort.signal.aborted;
+    const applyModels = (data) => {
+      if (!active() || applied === data) return;
+      applied = data;
       this.models = (data.models || []).map((item) => typeof item === "string" ? { id: item } : { ...item, id: item.id || item.name });
       this.loadingModels = false;
       this.picker.setItems(this.models, this.model);
       this.picker.input.disabled = !this.models.length;
       this.showNotice(this.model && !this.models.some((item) => item.id === this.model) ? t("missingModel") : this.models.length ? "" : t("noModels"));
-      await this.refreshSchema();
+      this.updateDisabled();
+      if (initialized && this.models.some((item) => item.id === this.model)) this.refreshSchema();
+      else if (initialized) this.clearSchema();
+    };
+    const family = operation.startsWith("image-") ? "image" : operation.startsWith("video-") ? "video" : /^(audio-|realtime)/.test(operation) ? "audio" : "text";
+    const scope = { profileId: profile, operation, family, locale: localeQuery(),
+      revision: this.profiles.find((row) => row.id === profile)?.model_catalog_revision };
+    if (this.catalog) this.modelUnsubscribe = this.catalog.subscribe(scope, (state) => {
+      if (!active()) return;
+      if (state.invalidated) {
+        this.modelAbort.abort(); this.loadingModels = false;
+        this.models = []; this.picker.setItems([], this.model); this.picker.input.disabled = true; this.clearSchema();
+        this.showNotice(t("authorityError"), true); this.updateDisabled();
+      } else if (state.value) applyModels(state.value);
+      this.catalogStatus.textContent = state.error ? t("modelUpdateFailed") : state.updating && state.value ? t("updatingModels") : "";
+      this.retryModels.hidden = !state.error;
+    });
+    try {
+      const data = this.catalog ? await this.catalog.get({ ...scope, refresh, signal: this.modelAbort.signal }) :
+        await this.request(`/easyapi/models?${new URLSearchParams({ profile_id: profile, operation, locale: localeQuery() })}`);
+      if (!active()) return;
+      applyModels(data); initialized = true;
+      if (this.models.some((item) => item.id === this.model)) await this.refreshSchema();
+      else this.clearSchema();
     } catch (error) {
       if (!this.destroyed && sequence === this.modelSequence) {
-        this.loadingModels = false; this.updateDisabled(); this.showNotice(error.message, true);
+        this.loadingModels = false; this.updateDisabled(); this.showNotice(error.message, true); this.retryModels.hidden = false;
       }
     }
   }
@@ -188,5 +221,5 @@ export class PresetPanel {
     for (const entry of this.labels) entry.node.textContent = t(entry.key);
     this.renderProfiles(this.profile.value); this.syncOperations(); this.renderList(); this.picker.translate(); this.refreshModels();
   }
-  destroy() { this.destroyed = true; ++this.listSequence; ++this.modelSequence; ++this.schemaSequence; this.root.remove(); }
+  destroy() { this.destroyed = true; this.modelUnsubscribe?.(); this.modelAbort?.abort(); ++this.listSequence; ++this.modelSequence; ++this.schemaSequence; this.root.remove(); }
 }

@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { t, textKey, hostLocale, localeQuery } from "./ui-i18n.js";
-import { parseParams, draftKey, selectProfile, persistDraft, readDraft, normalizedSchema, requiredDefaults, VIDEO_PORTS, videoPortState, inferImageOperation, migrateImageWorkflow, IMAGE_LAYOUT_VERSION } from "./ui-state.js";
+import { parseParams, draftKey, selectProfile, persistDraft, readDraft, normalizedSchema, requiredDefaults, VIDEO_PORTS, videoPortState, inferImageOperation, migrateImageWorkflow, IMAGE_LAYOUT_VERSION, migrateVideoWorkflow, VIDEO_LAYOUT_VERSION } from "./ui-state.js";
 import { makeFieldHelp, renderSchemaForm } from "./ui-forms.js";
 import { ProfileManager, EASYAPI_SIDEBAR_ID } from "./profile-panel.js";
 import { PresetPanel } from "./preset-panel.js";
@@ -114,10 +114,19 @@ async function requestEstimate(payload, signal) {
   return jsonRequest("/easyapi/billing/estimate", { method: "POST", signal,
     headers: { "X-EasyAPI-Management": management, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
 }
-async function promptModels(profileId, signal) {
-  const query = new URLSearchParams({ profile_id: profileId, locale: localeQuery() });
-  const result = await jsonRequest(`/easyapi/prompt/models?${query}`, { signal });
-  return listOf(result, "models");
+async function promptModels(profileId, signal, onUpdate, { profiles, refresh = false } = {}) {
+  profiles ||= listOf(await nodeProfiles(), "profiles");
+  signal?.throwIfAborted();
+  const profile = profiles.find((row) => (row.id || row.profile_id) === profileId);
+  if (!profile) throw new Error(t("profileUnavailable"));
+  const scope = { profileId, revision: profile.model_catalog_revision, family: "text", operation: "chat",
+    locale: localeQuery(), purpose: "prompt" };
+  if (onUpdate && signal) {
+    const unsubscribe = modelCatalog.subscribe(scope, (state) => onUpdate({ ...state,
+      models: state.value ? listOf(state.value, "models") : undefined }));
+    signal.addEventListener("abort", unsubscribe, { once: true });
+  }
+  return listOf(await modelCatalog.get({ ...scope, signal, refresh }), "models");
 }
 async function transformPrompt(payload, signal, onEvent) {
   const management = await bootstrap();
@@ -302,16 +311,20 @@ function getProfileManager() {
     request: jsonRequest, bootstrap,
     createPresets: () => new PresetPanel({
       request: jsonRequest, mutation: (path, body, method) => profileManager.mutation(path, body, method),
+      catalog: modelCatalog,
       modelPicker: (onSelect) => new ModelPicker(onSelect), getOperations: () => [...registeredOperations.values()],
       onChanged: () => Promise.allSettled([...panels].map((panel) => panel.refreshPresets())),
     }),
     onChanged: async (profileId) => {
       nodeProfilesSnapshot = undefined;
       if (profileId) modelCatalog.invalidate(profileId);
-      await Promise.allSettled([...panels].map(async (panel) => {
+      const updates = [...panels].map(async (panel) => {
         if (profileId && String(value(panel.node, "profile_id")) === profileId) panel.realtime?.disconnect();
         await panel.refreshProfiles();
-      }));
+      });
+      const presetPanel = profileManager?.presetPanel;
+      if (profileId && presetPanel?.profile.value === profileId) updates.push(presetPanel.refreshModels());
+      await Promise.allSettled(updates);
     },
   });
   return profileManager;
@@ -479,13 +492,17 @@ class NodePanel {
     this.picker.input.disabled = true;
     this.status = el("div", { class: "ea-status", role: "status" });
     this.error = el("div", { class: "ea-error", role: "alert" });
+    this.catalogStatus = el("span", { class: "ea-caption", role: "status" });
+    this.retryModels = button(t("retryModels"), () => this.refreshModels(true));
+    this.retryModels.hidden = true;
     this.schema = el("div", { class: "ea-schema" });
     this.preview = el("pre", { class: "ea-preview" });
     this.modelInfo = el("span");
     const modelHeading = el("div", { class: "ea-field-name ea-model-heading" },
       el("label", { htmlFor: this.picker.input.id }, t("model")), this.modelInfo);
     this.modelLabel = el("div", { class: "ea-inline-field ea-model-field" }, modelHeading, this.picker.root);
-    this.content.append(this.modelLabel, this.status, this.error);
+    this.content.append(this.modelLabel, this.status,
+      el("div", { class: "ea-model-updates" }, this.catalogStatus, this.retryModels), this.error);
     this.createPrompt();
     this.hasModel = Boolean(widget(node, "model")); this.isVideo = (node.comfyClass || node.type) === "EasyAPIVideo";
     this.isImage = (node.comfyClass || node.type) === "EasyAPIImages";
@@ -589,6 +606,7 @@ class NodePanel {
     this.currentIdentity = this.identity(); this.persistCurrent(); this.jsonDirty = false;
     this.imageOperation = this.isImage ? this.operationId() : null; this.updateImageMode();
     if (this.isImage && this.node.properties?.easyapi_image_disconnected) this.error.textContent = t("imageLinksMigrated", { count: this.node.properties.easyapi_image_disconnected });
+    if (this.isVideo && this.node.properties?.easyapi_video_disconnected) this.error.textContent = t("videoLinksMigrated", { count: this.node.properties.easyapi_video_disconnected });
     this.promptEditor?.setValue(value(this.node, "prompt"), { reset: true });
     this.syncAdvanced(); this.updateBacking(); this.resize(); this.refreshProfiles();
   }
@@ -622,7 +640,7 @@ class NodePanel {
       resultMedia: promptOutputMedia(this.node, "video", "result_video", "node-result-" + this.node.id),
       profiles: (this.profiles || []).map(profile => {
         const id = profile.id || profile.profile_id;
-        return { id, name: profile.name || id };
+        return { id, name: profile.name || id, model_catalog_revision: profile.model_catalog_revision };
       }),
     };
   }
@@ -715,6 +733,7 @@ class NodePanel {
       const data = await nodeProfiles();
       if (this.disposed || sequence !== this.profileSequence) return;
       this.profiles = listOf(data, "profiles"); this.defaultId = data.default_profile_id || null;
+      this.promptEditor?.contextChanged();
       const current = String(value(this.node, "profile_id"));
       const selected = selectProfile(current, this.profiles, this.defaultId);
       if (selected !== current && !this.connected("profile_id")) { this.write("profile_id", selected); this.transition(true); }
@@ -730,12 +749,11 @@ class NodePanel {
   async refreshModels(force = false) {
     const sequence = ++this.sequence;
     this.modelAbort?.abort();
+    this.modelUnsubscribe?.();
     const profileId = String(value(this.node, "profile_id"));
-    this.models = [];
-    this.picker.input.disabled = true;
-    this.picker.setItems([], value(this.node, "model"));
     this.loadingModels = false;
     this.error.textContent = "";
+    this.catalogStatus.textContent = ""; this.retryModels.hidden = true;
     if (this.presetSelect) {
       ++this.presetSequence;
       this.presetSelect.disabled = true;
@@ -743,6 +761,8 @@ class NodePanel {
     }
     const profile = this.profiles?.find((row) => (row.id || row.profile_id) === profileId);
     if (this.modelDriven || !profile) {
+      this.models = []; this.picker.input.disabled = true;
+      this.picker.setItems([], value(this.node, "model"));
       this.clearSchema();
       this.status.textContent = t(this.modelDriven ? "linkedSelection" : profileId ? "profileUnavailable" :
         this.profiles?.length > 1 ? "nodeDefaultConnectionNeeded" : "nodeConnectionNeeded");
@@ -753,22 +773,56 @@ class NodePanel {
       this.clearSchema(); this.syncAdvanced(); return;
     }
     this.modelAbort = new AbortController();
-    this.loadingModels = true;
-    this.status.textContent = t("loadingModels");
-    try {
-      const data = await modelCatalog.get({
-        profileId, family: familyFor(this.node), operation: this.operationId(),
-        locale: localeQuery(), revision: profile.model_catalog_revision, refresh: force, signal: this.modelAbort.signal,
-      });
-      if (this.disposed || sequence !== this.sequence || this.modelDriven) return;
+    const scope = { profileId, family: familyFor(this.node), operation: this.operationId(),
+      locale: localeQuery(), revision: profile.model_catalog_revision };
+    const active = () => !this.disposed && sequence === this.sequence && !this.modelDriven && !this.modelAbort.signal.aborted;
+    let applied, initialized = false;
+    const loadDetails = async () => {
+      const current = String(value(this.node, "model"));
+      const available = this.models.some((row) => row.id === current);
+      await Promise.all([this.refreshPresets(true), available ? this.refreshSchema(force) : Promise.resolve()]);
+      if (active() && !current && value(this.node, "model")) await this.refreshSchema(force);
+    };
+    const applyModels = (data) => {
+      if (!active() || data === applied) return;
+      applied = data;
       this.models = listOf(data, "models").map((model) => typeof model === "string" ? { id: model } : { ...model, id: model.id || model.name });
-      this.picker.input.disabled = !this.models.length; this.picker.setItems(this.models, value(this.node, "model"));
+      this.picker.input.disabled = !this.models.length;
+      this.picker.setItems(this.models, value(this.node, "model"));
       this.updateModelStatus();
-      await this.refreshPresets(true);
-      if (sequence === this.sequence && !this.disposed) await this.refreshSchema(force);
+      if (!this.models.some((row) => row.id === String(value(this.node, "model")))) this.clearSchema();
+      if (initialized) loadDetails().catch((error) => { if (active()) this.error.textContent = error.message; });
+    };
+    const cached = modelCatalog.peek(scope);
+    if (cached) applyModels(cached.value);
+    else {
+      this.models = []; this.picker.input.disabled = true;
+      this.picker.setItems([], value(this.node, "model")); this.status.textContent = t("loadingModels");
+      this.loadingModels = true;
+    }
+    this.modelUnsubscribe = modelCatalog.subscribe(scope, (state) => {
+      if (!active()) return;
+      if (state.invalidated) {
+        this.modelAbort.abort();
+        this.models = []; this.picker.setItems([], value(this.node, "model")); this.picker.input.disabled = true;
+        this.clearSchema(); this.status.textContent = t("authorityError");
+      } else if (state.value) applyModels(state.value);
+      this.loadingModels = state.updating && !state.value;
+      this.catalogStatus.textContent = state.error ? t("modelUpdateFailed") : state.updating && state.value ? t("updatingModels") : "";
+      this.retryModels.hidden = !state.error;
+      if (state.error) this.error.textContent = state.error.message;
+      else if (state.value) this.error.textContent = "";
+    });
+    try {
+      const data = await modelCatalog.get({ ...scope, refresh: force, signal: this.modelAbort.signal });
+      if (!active()) return;
+      applyModels(data); initialized = true;
+      await loadDetails();
     } catch (error) {
       if (error.name !== "AbortError" && sequence === this.sequence && !this.disposed) {
-        this.status.textContent = t("authorityError"); this.error.textContent = error.message;
+        if (!this.models.length) this.status.textContent = t("authorityError");
+        this.error.textContent = error.message;
+        this.retryModels.hidden = false;
       }
     } finally {
       if (sequence === this.sequence && !this.disposed) this.loadingModels = false;
@@ -777,6 +831,7 @@ class NodePanel {
   async refreshSchema(force = false) {
     const profile = String(value(this.node, "profile_id")), model = String(value(this.node, "model"));
     if (!model || !this.hasModel || this.modelDriven ||
+      !this.models?.some((row) => row.id === model) ||
       !this.profiles?.some((connection) => (connection.id || connection.profile_id) === profile)) return;
     const sequence = ++this.schemaSequence;
     this.schemaAbort?.abort(); this.schemaAbort = new AbortController();
@@ -986,6 +1041,7 @@ class NodePanel {
   }
   dispose() {
     this.disposed = true; this.modelAbort?.abort(); this.schemaAbort?.abort(); clearTimeout(this.connectionTimer);
+    this.modelUnsubscribe?.();
     this.contentObserver?.disconnect();
     this.billing?.dispose();
     this.promptEditor?.dispose();
@@ -1277,6 +1333,7 @@ app.registerExtension({
       const result = created?.apply(this, args);
       const panel = new NodePanel(this); this.easyapiPanel = panel;
       if (panel.isImage) { this.properties ??= {}; this.properties.easyapi_image_layout = IMAGE_LAYOUT_VERSION; }
+      if (panel.isVideo) { this.properties ??= {}; this.properties.easyapi_video_layout = VIDEO_LAYOUT_VERSION; }
       const dom = this.addDOMWidget("easyapi_controls", "easyapi_controls", panel.root,
         { serialize: false, hideOnZoom: false, margin: 0, getMinHeight: () => panel.minHeight() });
       if (panel.isImage) dom.serialize = false;
@@ -1288,6 +1345,7 @@ app.registerExtension({
       this.onConfigure = (...values) => {
         configure?.apply(this, values);
         if (panel.isImage) { this.properties ??= {}; this.properties.easyapi_image_layout = IMAGE_LAYOUT_VERSION; }
+        if (panel.isVideo) { this.properties ??= {}; this.properties.easyapi_video_layout = VIDEO_LAYOUT_VERSION; }
         panel.configure();
       };
       const added = this.onAdded;
@@ -1323,6 +1381,12 @@ app.registerExtension({
   },
   beforeConfigureGraph(graphData) {
     for (const panel of panels) panel.realtime?.disconnect();
+    const videoReport = migrateVideoWorkflow(graphData);
+    if (videoReport.disconnected) {
+      const detail = t("videoLinksMigrated", { count: videoReport.disconnected });
+      app.extensionManager?.toast?.add?.({ severity: "warn", summary: t("videoNodeUpdated"), detail, life: 15000 });
+      console.warn("[EasyAPI] " + detail);
+    }
     const report = migrateImageWorkflow(graphData);
     if (report.disconnected) {
       const detail = t("imageLinksMigrated", { count: report.disconnected });

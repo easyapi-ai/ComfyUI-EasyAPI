@@ -489,6 +489,11 @@ def _pack(decoded, handle=None):
                          ui={"easyapi_text": [str(decoded.get("text") or "")], "easyapi_task": [handle or {}]})
 
 
+def _pack_video(decoded, handle=None):
+    return io.NodeOutput(decoded.get("video"), decoded.get("video_url") or "", decoded.get("json"),
+                         ui={"easyapi_text": [str(decoded.get("text") or "")], "easyapi_task": [handle or {}]})
+
+
 class OperationNode(io.ComfyNode):
     NODE_ID = "EasyAPIOperation"
     DISPLAY = "EasyAPI 创作"
@@ -536,7 +541,7 @@ class OperationNode(io.ComfyNode):
 
     @classmethod
     async def submit(cls, client, runtime, model, prompt, params,
-                     protocol, sources, wait_for_result, timeout, metadata=None):
+                     protocol, sources, wait_for_result, timeout, metadata=None, output_builder=None):
         _interrupt()
         path, body, files, query = await prepare_request(client, protocol, model, prompt, params, sources)
         await validate_request(client, model, protocol, body, files, apply_defaults=True, metadata=metadata)
@@ -548,10 +553,12 @@ class OperationNode(io.ComfyNode):
             if wait_for_result:
                 response = await wait_for_task(client, runtime.tasks, handle, timeout=timeout, interrupt=_interrupt)
             else:
+                if output_builder is not None:
+                    return output_builder({"json": response.data, "text": "任务已提交：" + handle["task_id"]}, handle)
                 return io.NodeOutput("任务已提交：" + handle["task_id"], response.data, None, None,
                                      None, None, handle, {"files": [], "urls": []})
         decoded = await media.decode_response(response, client, _output_dir())
-        return _pack(decoded, handle)
+        return (output_builder or _pack)(decoded, handle)
 
 
 def _operation_class(name, display, ops):
@@ -742,6 +749,9 @@ class EasyAPIVideo(OperationNode):
     @classmethod
     def define_schema(cls):
         schema = super().define_schema()
+        schema.outputs = [io.Video.Output(id="video", display_name="视频"),
+                          io.String.Output(id="url", display_name="URL", tooltip="首个输出视频对应的真实上游 URL；仅返回二进制或内联视频时为空。"),
+                          JSON.Output(id="response", display_name="响应")]
         generic_ports = {"image", "mask", "audio", "video"}
         schema.inputs = [entry for entry in schema.inputs if entry.id not in generic_ports]
         schema.inputs.append(io.String.Input("mode", default="auto"))
@@ -789,7 +799,7 @@ class EasyAPIVideo(OperationNode):
                 schema["required"] = variant["required"]
             metadata = {**metadata, "request_schema": schema}
         return await cls.submit(client, runtime, model, prompt, params, get_protocol(operation),
-                                sources, wait_for_result, timeout, metadata=metadata)
+                                sources, wait_for_result, timeout, metadata=metadata, output_builder=_pack_video)
 
 
 class EasyAPIMedia(io.ComfyNode):

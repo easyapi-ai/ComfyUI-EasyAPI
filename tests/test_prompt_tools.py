@@ -15,21 +15,25 @@ class PromptToolRoutesTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.enterContext(patch.dict(os.environ, {"EASYAPI_PUBLIC_ORIGIN": ""}))
         self.completions = []
+        self.writer_models = [
+            {"id": "chat", "name": "Fixture Chat", "category": "text", "supported_endpoint_types": ["openai"]},
+            {"id": "video", "category": "video", "supported_endpoint_types": ["openai"]},
+            {"id": "undocumented"},
+        ]
+        self.model_status = 200
         self.model_requests = []
         self.reply = {"choices": [{"message": {"content": "refined prompt"}, "finish_reason": "stop"}]}
 
         async def models(request):
             key = request.headers["Authorization"]
             self.model_requests.append(key)
+            if self.model_status != 200:
+                return web.json_response({"error": "fixture rejected"}, status=self.model_status)
             if key == "Bearer fixture-other-key":
                 return web.json_response({"data": [{"id": "other-chat", "category": "text",
                                                    "supported_endpoint_types": ["openai"]}]})
             self.assertEqual(key, "Bearer fixture-text-key")
-            return web.json_response({"data": [
-                {"id": "chat", "name": "Fixture Chat", "category": "text", "supported_endpoint_types": ["openai"]},
-                {"id": "video", "category": "video", "supported_endpoint_types": ["openai"]},
-                {"id": "undocumented"},
-            ]})
+            return web.json_response({"data": self.writer_models})
 
         async def pricing(request):
             self.assertNotIn("Authorization", request.headers)
@@ -63,7 +67,12 @@ class PromptToolRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_catalog_and_guards_do_not_submit_generation(self):
         response = await self.browser.get("/easyapi/prompt/models?profile_id=writer&locale=zh")
-        self.assertEqual(await response.json(), {"models": [{"id": "chat", "display_name": "Fixture Chat"}]})
+        catalog = await response.json()
+        self.assertEqual(catalog["models"], [{"id": "chat", "display_name": "Fixture Chat"}])
+        self.assertFalse(catalog["empty"])
+        self.assertEqual(catalog["authority"], "api_key")
+        self.assertEqual(catalog["locale"], "zh-CN")
+        self.assertTrue(0 <= catalog["cache_ttl"] <= 300)
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(self.model_requests, ["Bearer fixture-text-key"])
         headers = {"Origin": self.origin}
@@ -81,6 +90,23 @@ class PromptToolRoutesTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(overrides=tuple(overrides)):
                 invalid = await self.browser.post("/easyapi/prompt/transform", headers=headers, json=self.value | overrides)
                 self.assertEqual(invalid.status, 400)
+        self.assertEqual(self.completions, [])
+
+    async def test_prompt_model_refresh_replaces_scope_and_preserves_auth_errors(self):
+        path = "/easyapi/prompt/models?profile_id=writer&locale=zh"
+        first = await (await self.browser.get(path)).json()
+        self.assertEqual(first["models"][0]["id"], "chat")
+        await self.browser.get(path)
+        self.assertEqual(len(self.model_requests), 1)
+        self.writer_models = []
+        refreshed = await (await self.browser.get(path + "&refresh=1")).json()
+        self.assertEqual(refreshed["models"], [])
+        self.assertTrue(refreshed["empty"])
+        self.assertEqual(len(self.model_requests), 2)
+        self.model_status = 403
+        rejected = await self.browser.get(path + "&refresh=true")
+        self.assertEqual(rejected.status, 403)
+        self.assertNotIn("models", await rejected.json())
         self.assertEqual(self.completions, [])
 
     async def test_explicit_actions_only_send_prompt_and_return_editable_text(self):

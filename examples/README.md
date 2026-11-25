@@ -16,7 +16,8 @@
 | `08-speech-transcribe.json` | TTS、原生 AUDIO、兼容转录模型及 SaveAudio |
 | `10-claude-messages.json` | 普通对话节点使用 Claude Messages |
 | `11-video-audio-reference.json` | TTS 的 AUDIO 直接连接视频参考音频端口 |
-| `12-split-task.json` | 提交任务与等待节点分开 |
+| `12-split-task.json` | 仅提交视频任务并查看响应 |
+| `12-resume-task.json` | 在任务历史中选择或填写任务 ID，恢复等待并保存视频 |
 | `13-json-tools.json` | JSON 构造与预览 |
 
 `14-realtime-and-image.json` 是可拖入的图形工作流。先选择连接和实时模型，通过语音或文字完成对话并冻结或应用，再运行工作流读取结果。快照 ID 初始为空，不引用其他机器的录音。麦克风需要受信任 HTTPS 或 localhost。
@@ -24,5 +25,7 @@
 示例不依赖已移除的 Moderation、Search、Rerank、Embedding、NativeRequest、Midjourney、Suno 节点。旧音乐、Midjourney、原生请求示例不再作为本版本用法。
 
 图片节点只使用同步接口：未传参考图片时文生图，传入图片或图片参考组时图生图。输出顺序为 `image`、`url`、`响应`；多张图片保留为 IMAGE 批次，`url` 为首个上游 URL，完整结果在响应中。仅返回 base64 时 URL 为空。图片异步任务示例已移除。
+
+视频节点输出顺序为 `video`、`url`、`response`（索引 `0/1/2`）；视频可直连 SaveVideo。拆分任务示例分两次执行：先运行 `12-split-task.json`，再在 `12-resume-task.json` 的等待节点中选择刚提交的任务或填写其 ID，不会重新提交生成。
 
 模拟音频、图片和视频只验证协议与媒体连接，不代表真实模型效果；参考角色、数量和组合以当前连接的能力声明为准。

@@ -82,6 +82,14 @@ function stepper(kind, input, label, t, minimum, maximum, getValue, middle = inp
 
 function durationBounds(definition) {
   const { minimum, maximum, anyOf } = definition;
+  const choices = definition.enum || definition.options;
+  if (Array.isArray(choices)) {
+    if (anyOf || !choices.every((value) => Number.isSafeInteger(value) &&
+      (minimum === undefined || value >= minimum) && (maximum === undefined || value <= maximum))) return null;
+    const values = [...new Set(choices)].sort((a, b) => a - b);
+    if (values.length < 2) return null;
+    return { minimum: values[0], maximum: values.at(-1), smart: values.includes(-1), values };
+  }
   if (!anyOf) return { minimum, maximum, smart: false };
   if (minimum !== undefined || maximum !== undefined || !Array.isArray(anyOf) || anyOf.length !== 2) return null;
   const smart = anyOf.find((branch) => branch?.const === -1 && Object.keys(branch).length === 1);
@@ -272,7 +280,7 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         (!Array.isArray(options) || (options.length === 2 && options.includes(true) && options.includes(false)));
       const canSwitch = (value) => supportsSwitch && (value === undefined || typeof value === "boolean");
       const isSwitch = canSwitch(current);
-      const simpleInteger = type === "integer" && !hasChoices && !definition.oneOf && !definition.additionalProperties && definition.const === undefined &&
+      const simpleInteger = type === "integer" && !definition.oneOf && !definition.additionalProperties && definition.const === undefined &&
         definition.exclusiveMinimum === undefined && definition.exclusiveMaximum === undefined &&
         (definition.multipleOf === undefined || definition.multipleOf === 1);
       const minimum = definition.minimum;
@@ -281,17 +289,20 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
         ? durationBounds(definition) : null;
       const durationMin = bounds?.minimum;
       const durationMax = bounds?.maximum;
+      const durationValues = bounds?.values;
       const hasSmartDuration = bounds?.smart === true;
-      const withinBounds = (value) => value === undefined || (hasSmartDuration && value === -1) ||
-        (Number.isSafeInteger(value) && value >= durationMin && value <= durationMax);
+      const withinBounds = (value) => value === undefined || (durationValues ? durationValues.includes(value) :
+        (hasSmartDuration && value === -1) || (Number.isSafeInteger(value) && value >= durationMin && value <= durationMax));
       const supportsDuration = Number.isSafeInteger(durationMin) && Number.isSafeInteger(durationMax) &&
         durationMin < durationMax && withinBounds(definition.default);
       const canSlide = (value) => supportsDuration && withinBounds(value);
       const isDuration = canSlide(current);
-      // Reserve the stop immediately before the fixed range for smart duration.
-      const firstDurationStop = hasSmartDuration ? durationMin - 1 : durationMin;
-      const durationAtStop = (stop) => hasSmartDuration && stop === firstDurationStop ? -1 : stop;
-      const durationStop = (value) => hasSmartDuration && value === -1 ? firstDurationStop : value;
+      // Enum sliders use indexes so sparse choices never invent unsupported seconds.
+      // For bounded ranges, reserve the stop before the fixed range for smart duration.
+      const firstDurationStop = durationValues ? 0 : hasSmartDuration ? durationMin - 1 : durationMin;
+      const lastDurationStop = durationValues ? durationValues.length - 1 : durationMax;
+      const durationAtStop = (stop) => durationValues ? durationValues[stop] : hasSmartDuration && stop === firstDurationStop ? -1 : stop;
+      const durationStop = (value) => value === undefined ? undefined : durationValues ? durationValues.indexOf(value) : hasSmartDuration && value === -1 ? firstDurationStop : value;
       const inputValue = (value) => value === undefined ? defaultChoice : hasChoices ? JSON.stringify(value) : isJSON ? JSON.stringify(value, null, 2) : value;
       const effectiveNumber = () => {
         const value = atPath(getValue(), path);
@@ -301,26 +312,26 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
       if (isSwitch) {
         input = make("input", { type: "checkbox", className: "ea-switch" });
         input.setAttribute("role", "switch");
-      } else if (hasChoices) {
+      } else if (hasChoices && !isDuration) {
         const choicesUI = choices.map((choice) => make("option", { value: JSON.stringify(choice) }, displayOption(choice)));
         if (current !== undefined && !choicesUI.some((choice) => choice.value === inputValue(current))) {
           choicesUI.push(make("option", { value: inputValue(current), disabled: true, hidden: true }, displayOption(current)));
         }
         input = make("select", {}, ...choicesUI);
       } else if (isDuration) {
-        input = make("input", { type: "range", className: "ea-duration-input", min: String(firstDurationStop), max: String(durationMax), step: "1" });
+        input = make("input", { type: "range", className: "ea-duration-input", min: String(firstDurationStop), max: String(lastDurationStop), step: "1" });
         const output = make("output", { className: "ea-duration-value" });
         const track = make("div", { className: "ea-duration-track" }, input, output);
-        const steps = stepper("duration", input, label, t, firstDurationStop, durationMax, () => durationStop(effectiveNumber()), track);
+        const steps = stepper("duration", input, label, t, firstDurationStop, lastDurationStop, () => durationStop(effectiveNumber()), track);
         control = steps.element;
         const paint = (value) => {
-          const fraction = value === undefined ? 0 : (durationStop(value) - firstDurationStop) / (durationMax - firstDurationStop);
+          const fraction = value === undefined ? 0 : (durationStop(value) - firstDurationStop) / (lastDurationStop - firstDurationStop);
           control.style.setProperty("--ea-duration-fill", `${fraction * 100}%`);
           output.textContent = value === undefined ? "—" : hasSmartDuration && value === -1 ? t("smartDuration") : String(value);
-          if (hasSmartDuration) input.setAttribute("aria-valuetext", value === undefined ? t("durationUnset") : output.textContent);
+          if (hasSmartDuration || durationValues) input.setAttribute("aria-valuetext", value === undefined ? t("durationUnset") : output.textContent);
         };
         input.addEventListener("input", () => paint(durationAtStop(Number(input.value))));
-        if (hasSmartDuration) {
+        if (hasSmartDuration || durationValues) {
           // The native range emits no change if the first stop is already under its thumb.
           input.addEventListener("click", () => { if (effectiveNumber() === undefined) steps.choose(Number(input.value)); });
           input.addEventListener("keydown", (event) => {
@@ -402,7 +413,11 @@ export function renderSchemaForm(container, schema, getValue, onChange, t, onRes
               input.value = inputValue(atPath(getValue(), path));
             } else commit(path, undefined, true);
           }
-          else if (isDuration) commit(path, durationAtStop(Number(next)));
+          else if (isDuration) {
+            const duration = durationAtStop(Number(next));
+            if (duration === undefined || !withinBounds(duration)) throw new Error(t("invalidNumber"));
+            commit(path, duration);
+          }
           else if (hasChoices || (isJSON && !supportsDuration)) commit(path, JSON.parse(next));
           else if (["integer", "number"].includes(type)) {
             next = Number(next);

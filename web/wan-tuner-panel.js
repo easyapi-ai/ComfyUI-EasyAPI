@@ -157,6 +157,7 @@ export class WanTunerPanel {
     this.root = element("div", { className: "ea-wan-panel" });
     this.addedMedia = [];
     this.objectUrls = [];
+    this.modelPreferences = new Map();
     this.contextKey = contextFingerprint(getContext());
     this.shapeKey = mediaShape(getContext());
     this.domain = select(["drama", "ecommerce"], value => t("wanDomain_" + value));
@@ -178,6 +179,9 @@ export class WanTunerPanel {
     this.videoUrl = element("input", { type: "url", placeholder: t("wanVideoUrl") });
     this.mediaList = element("ul", { className: "ea-wan-media" });
     this.status = element("p", { className: "ea-prompt-status", role: "status" });
+    this.catalogStatus = element("span", { className: "ea-caption", role: "status" });
+    this.retryModels = button(t("retryModels"), () => this.refreshModels({}, true));
+    this.retryModels.hidden = true;
     this.resultPrompt = element("textarea", { rows: 6, readOnly: true });
     this.details = element("div", { className: "ea-wan-details" });
     this.result = element("div", { className: "ea-prompt-result ea-wan-result", hidden: true });
@@ -204,6 +208,7 @@ export class WanTunerPanel {
       field(t("wanAnalysisModel"), this.analysisModel));
     this.content = element("div", { className: "ea-wan-content" }, form, this.contextParams,
       element("p", { className: "ea-caption", textContent: t("promptTransformCost") }),
+      element("div", { className: "ea-model-updates" }, this.catalogStatus, this.retryModels),
       element("details", { open: true, className: "ea-wan-materials" }, element("summary", { textContent: t("wanMaterials") }),
         this.mediaList, field(t("wanAddMedia"), attachment), field(t("wanAnalyzeMedia"), this.analyze)),
       this.issueFields, this.status, this.result);
@@ -211,7 +216,7 @@ export class WanTunerPanel {
     for (const control of [this.domain, this.mode, this.output, this.model, this.analysisModel, this.analyze,
       this.issue, this.start, this.end, this.videoUrl]) control.addEventListener("input", () => this.changed());
     this.output.addEventListener("change", () => this.updateIssue());
-    this.profile.addEventListener("change", () => { this.changed(); this.refreshModels(); });
+    this.profile.addEventListener("change", () => { this.invalidate(); this.refreshModels(); });
     this.updateIssue();
     this.renderMedia();
     this.invalidate(false);
@@ -225,6 +230,7 @@ export class WanTunerPanel {
   }
 
   checkContext() {
+    if (this.catalogKey !== this.modelScopeKey()) { this.invalidate(); this.refreshModels(); }
     const key = contextFingerprint(this.getContext());
     if (key === this.contextKey) return;
     this.contextKey = key;
@@ -240,8 +246,10 @@ export class WanTunerPanel {
 
   changed() {
     this.invalidate();
-    this.onPreferences?.({ domain: this.domain.value, mode: this.mode.value, shape: this.shapeKey, output: this.output.value,
-      model: this.model.value, analysisModel: this.analysisModel.value });
+    const preferences = { domain: this.domain.value, mode: this.mode.value, shape: this.shapeKey, output: this.output.value,
+      profileId: this.profile.value, model: this.model.value, analysisModel: this.analysisModel.value };
+    this.modelPreferences.set(this.profile.value, preferences);
+    this.onPreferences?.(preferences);
   }
 
   updateIssue() {
@@ -292,32 +300,66 @@ export class WanTunerPanel {
     finally { this.renderMedia(); }
   }
 
-  async refreshModels(preferences = {}) {
+  modelScopeKey() {
+    const profile = this.getContext().profiles?.find((row) => row.id === this.profile.value);
+    return JSON.stringify([this.profile.value, profile?.model_catalog_revision]);
+  }
+
+  async refreshModels(preferences = {}, refresh = false) {
     this.modelRequest?.abort();
     const request = new AbortController();
     this.modelRequest = request;
+    this.catalogKey = this.modelScopeKey();
+    preferences = this.modelPreferences.get(this.profile.value) ||
+      (!preferences.profileId || preferences.profileId === this.profile.value ? preferences : {});
     this.run.disabled = this.model.disabled = this.analysisModel.disabled = true;
-    if (!this.profile.value) { this.status.textContent = this.t("profileNeeded"); return; }
-    this.status.textContent = this.t("loadingModels");
-    try {
-      const models = await this.loadModels(this.profile.value, request.signal);
-      if (request.signal.aborted) return;
+    this.model.replaceChildren(); this.analysisModel.replaceChildren();
+    this.model.value = this.analysisModel.value = "";
+    this.retryModels.hidden = true;
+    if (!this.profile.value) { this.catalogStatus.textContent = this.t("profileNeeded"); return; }
+    this.catalogStatus.textContent = this.t("loadingModels");
+    let applied;
+    const applyModels = (models) => {
+      if (request.signal.aborted || applied === models) return;
+      const previous = this.model.value, previousAnalysis = this.analysisModel.value;
+      const replacing = applied !== undefined;
+      applied = models;
       this.models = models;
       this.model.replaceChildren(element("option", { value: "", textContent: this.t("chooseModel") }),
         ...models.map(item => element("option", { value: item.id, textContent: item.display_name || item.id })));
-      const wanted = preferences.model || this.getContext().modelId;
-      this.model.value = models.some(item => item.id === wanted) ? wanted : models.length === 1 ? models[0].id : "";
+      const wanted = replacing ? previous : preferences.model || this.getContext().modelId;
+      this.model.value = models.some(item => item.id === wanted) ? wanted : !replacing && models.length === 1 ? models[0].id : "";
       const visual = models.filter(visualModel);
       this.analysisModel.replaceChildren(element("option", { value: "", textContent: this.t("wanAnalysisOptional") }),
         ...visual.map(item => element("option", { value: item.id, textContent: item.display_name || item.id })));
-      this.analysisModel.value = visual.some(item => item.id === preferences.analysisModel) ? preferences.analysisModel :
+      const wantedAnalysis = replacing ? previousAnalysis : preferences.analysisModel;
+      this.analysisModel.value = visual.some(item => item.id === wantedAnalysis) ? wantedAnalysis : replacing ? "" :
         visual.some(item => item.id === this.model.value) ? this.model.value : visual.length === 1 ? visual[0].id : "";
       this.model.disabled = !models.length;
       this.analysisModel.disabled = !visual.length;
-      this.run.disabled = !this.model.value;
-      this.status.textContent = models.length ? (visual.length ? "" : this.t("wanNoVisionModel")) : this.t("noModels");
+      this.run.disabled = !this.model.value || Boolean(this.request);
+      if (replacing && (previous !== this.model.value || previousAnalysis !== this.analysisModel.value)) this.invalidate();
+      this.catalogStatus.textContent = models.length ? (visual.length ? "" : this.t("wanNoVisionModel")) : this.t("noModels");
+    };
+    const update = (state) => {
+      if (request.signal.aborted) return;
+      if (state.invalidated) {
+        request.abort();
+        this.invalidate(); applied = undefined; this.models = [];
+        this.model.replaceChildren(); this.analysisModel.replaceChildren();
+        this.model.value = this.analysisModel.value = "";
+        this.run.disabled = this.model.disabled = this.analysisModel.disabled = true;
+      } else if (state.models) applyModels(state.models);
+      this.retryModels.hidden = !state.error && !state.invalidated;
+      if (state.error) this.catalogStatus.textContent = state.invalidated ? state.error.message : this.t("modelUpdateFailed");
+      else if (state.updating) this.catalogStatus.textContent = this.t(state.value ? "updatingModels" : "loadingModels");
+    };
+    try {
+      const models = await this.loadModels(this.profile.value, request.signal, update,
+        { profiles: this.getContext().profiles, refresh });
+      applyModels(models);
     } catch (error) {
-      if (!request.signal.aborted) this.status.textContent = error.message;
+      if (!request.signal.aborted) { this.catalogStatus.textContent = error.message; this.retryModels.hidden = false; }
     }
   }
 

@@ -16,35 +16,15 @@
     }
   },
   "2": {
-    "class_type": "EasyAPITaskWait",
+    "class_type": "EasyAPIPreview",
     "inputs": {
-      "profile_id": "mock",
-      "task_id": "",
-      "operation": "video-generation",
-      "timeout": 1800,
-      "task": [
+      "json_value": [
         "1",
-        6
+        2
       ]
     },
     "_meta": {
-      "title": "EasyAPI 等待任务结果"
-    }
-  },
-  "3": {
-    "class_type": "SaveVideo",
-    "inputs": {
-      "filename_prefix": "EasyAPI-verify/task-video",
-      "format": "auto",
-      "format.codec": "auto",
-      "codec": "auto",
-      "video": [
-        "2",
-        5
-      ]
-    },
-    "_meta": {
-      "title": "Save Video"
+      "title": "提交任务响应"
     }
   }
 }

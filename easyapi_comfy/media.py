@@ -251,7 +251,7 @@ def _native_video(path):
 async def decode_response(response, client, output_dir):
     if not isinstance(response, APIResponse):
         response = APIResponse(data=response)
-    result = {"images": None, "mask": None, "audio": None, "video": None, "files": [], "urls": [],
+    result = {"images": None, "mask": None, "audio": None, "video": None, "video_url": "", "files": [], "urls": [],
               "text": response_text(response.data), "json": response.data, "warnings": []}
     assets = _collect_media(response.data)
     image_paths, audio_paths, video_paths = [], [], []
@@ -284,6 +284,8 @@ async def decode_response(response, client, output_dir):
             path = _new_path(output_dir, suffix)
             await client.download(url, path)
         result["files"].append(str(path))
+        if kind == "video" and not video_paths and not url.startswith("data:"):
+            result["video_url"] = client.base_url + url if url.startswith("/") else url
         (image_paths if kind == "image" else audio_paths if kind == "audio" else video_paths if kind == "video" else []).append(path)
     if image_paths:
         result["images"], result["mask"] = await asyncio.to_thread(_decode_image_files, image_paths)

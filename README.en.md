@@ -45,7 +45,7 @@ Workflows store only connection IDs. The ComfyUI backend keeps keys in its persi
 |---|---|
 | EasyAPI Chat | Chat, Responses, Claude Messages, Gemini, and text completion |
 | EasyAPI Images | Synchronous text to image or image editing, selected automatically from reference images; image, url and response outputs |
-| EasyAPI Video | Video generation through the unified `/v1/videos` endpoint |
+| EasyAPI Video | Video generation through the unified `/v1/videos` endpoint; video, URL and response outputs |
 | EasyAPI Speech | Text-to-speech with native `AUDIO` output |
 | EasyAPI Transcribe | Transcription and translation for `AUDIO` or `VIDEO` with an audio track, using a compatible model |
 | EasyAPI Count Tokens | Count tokens for compatible message requests |
@@ -86,13 +86,15 @@ The video node uses the unified `/v1/videos` endpoint.
 
 The `auto` input mode selects a mode from the connected media and the model's declared capabilities. The selected model determines supported ports, media counts, and combinations, including last-frame, first-and-last-frame, and multimodal references.
 
+Outputs are the native `VIDEO` object (connect directly to SaveVideo), that video's upstream URL, and the complete response. The URL never substitutes a cover or input reference and is empty for binary or inline video. Older graphical workflows migrate video and JSON links automatically and report disconnected obsolete outputs. API-format workflows must use output indices `0/1/2`.
+
 Local media goes directly to endpoints that accept files or inline data. When an endpoint requires a public URL, the plugin can upload media through `/v1/media`. Older gateways without that endpoint require an existing public URL for URL-only inputs. The default limit is 100 MiB per media item, and large files are streamed. [Interface coverage](docs/INTERFACE-COVERAGE.md)
 
 ## Tasks and real-time sessions
 
 A generation node submits a new request each time it runs in the queue. The image node uses synchronous endpoints only: text to image without references, or image editing when an image, reference group or image URL parameter is supplied. Its outputs are image, the first upstream url, and the complete response. The url is empty when the upstream provides only base64.
 
-For other asynchronous operations, turn off **Wait for result** and connect the task output to a status, wait, or download node. Task IDs and polling details are stored in the persistent user directory so you can resume after stopping a wait, reaching a timeout, or restarting ComfyUI. The upstream task can continue after the local wait ends. If submission times out before returning a task ID, check the platform for the task before submitting it again.
+With **Wait for result** disabled, the video node returns no video, an empty URL and the submission response. Resume through the task history selector or task ID on a status or wait node. Other asynchronous nodes retain their task output. Task IDs and polling details are stored in the persistent user directory so you can resume after stopping a wait, reaching a timeout, or restarting ComfyUI. The upstream task can continue after the local wait ends. If submission times out before returning a task ID, check the platform for the task before submitting it again.
 
 Use the connection, voice or text, mute, interrupt, and end controls on the real-time node. Freeze or apply the conversation, then run the workflow to read the text and `AUDIO` snapshot. Live sessions run independently of the generation queue. The microphone starts when you activate it on the node.
 

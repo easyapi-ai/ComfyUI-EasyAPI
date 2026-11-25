@@ -124,6 +124,76 @@ export function migrateImageWorkflow(graph) {
   visit(graph);
   return report;
 }
+export const VIDEO_LAYOUT_VERSION = 2;
+const VIDEO_DEFAULT_OUTPUT_LABELS = new Set([...IMAGE_DEFAULT_OUTPUT_LABELS, "VIDEO", "Video", "video", "视频", "影片", "視頻"]);
+function videoOutputSlot(output, name, type, index) {
+  const slot = { ...output, name, type, slot_index: index };
+  delete slot.localized_name;
+  if (VIDEO_DEFAULT_OUTPUT_LABELS.has(slot.label)) delete slot.label;
+  return slot;
+}
+export function legacyVideoLayout(node) {
+  return node?.type === "EasyAPIVideo" && node.outputs?.length >= 8 &&
+    node.outputs[0]?.type === "STRING" && node.outputs[1]?.type === "EASYAPI_JSON" && node.outputs[5]?.type === "VIDEO";
+}
+
+// Only outputs change: preserve all inputs, widgets, parameters and reference links.
+export function migrateVideoWorkflow(graph) {
+  const report = { nodes: 0, disconnected: 0 };
+  const seen = new Set();
+  const visit = (scope) => {
+    if (!scope || typeof scope !== "object" || seen.has(scope)) return;
+    seen.add(scope);
+    const nodes = Array.isArray(scope.nodes) ? scope.nodes : [];
+    const migrated = new Map();
+    for (const node of nodes) {
+      if (node?.type === "EasyAPIVideo" && node.outputs?.length === 3 &&
+        node.outputs[0]?.type === "VIDEO" && node.outputs[1]?.type === "STRING" && node.outputs[2]?.type === "EASYAPI_JSON") {
+        node.outputs = [videoOutputSlot(node.outputs[0], "视频", "VIDEO", 0),
+          videoOutputSlot(node.outputs[1], "URL", "STRING", 1), videoOutputSlot(node.outputs[2], "响应", "EASYAPI_JSON", 2)];
+      }
+      if (!legacyVideoLayout(node)) continue;
+      node.outputs = [
+        { ...videoOutputSlot(node.outputs[5], "视频", "VIDEO", 0), links: [] },
+        { name: "URL", type: "STRING", slot_index: 1, links: [] },
+        { ...videoOutputSlot(node.outputs[1], "响应", "EASYAPI_JSON", 2), links: [] },
+      ];
+      node.properties ??= {};
+      node.properties.easyapi_video_layout = VIDEO_LAYOUT_VERSION;
+      migrated.set(String(node.id), node);
+      ++report.nodes;
+    }
+    if (migrated.size && Array.isArray(scope.links)) {
+      const removed = new Set();
+      scope.links = scope.links.filter((link) => {
+        const array = Array.isArray(link), id = array ? link[0] : link.id;
+        const source = migrated.get(String(array ? link[1] : link.origin_id));
+        if (!source) return true;
+        const oldSlot = array ? link[2] : link.origin_slot;
+        const newSlot = ({ 5: 0, 1: 2 })[oldSlot];
+        if (newSlot === undefined) {
+          removed.add(String(id)); ++report.disconnected;
+          source.properties.easyapi_video_disconnected = (source.properties.easyapi_video_disconnected || 0) + 1;
+          return false;
+        }
+        if (array) { link[2] = newSlot; link[5] = source.outputs[newSlot].type; }
+        else { link.origin_slot = newSlot; link.type = source.outputs[newSlot].type; }
+        source.outputs[newSlot].links.push(id);
+        return true;
+      });
+      for (const node of nodes) {
+        for (const input of node.inputs || []) if (removed.has(String(input.link))) input.link = null;
+        for (const output of node.outputs || []) if (Array.isArray(output.links)) output.links = output.links.filter((id) => !removed.has(String(id)));
+      }
+      for (const reroute of scope.reroutes || []) if (Array.isArray(reroute.linkIds)) reroute.linkIds = reroute.linkIds.filter((id) => !removed.has(String(id)));
+    }
+    for (const child of scope.definitions?.subgraphs || []) visit(child);
+    for (const child of scope.subgraphs || []) visit(child);
+  };
+  visit(graph);
+  return report;
+}
+
 export function parseParams(raw) {
   const result = typeof raw === "string" ? JSON.parse(raw || "{}") : clone(raw || {});
   if (!result || Array.isArray(result) || typeof result !== "object") throw new Error("objectRequired");

@@ -162,7 +162,7 @@
       },
       "wait_for_result": {
         "name": "Wait for result",
-        "tooltip": "Wait for an asynchronous task to finish. Turn off to return its handle for a separate task node."
+        "tooltip": "Wait for the video result. When disabled, the response contains the submitted task; resume it from the task history or task ID."
       },
       "timeout": {
         "name": "Wait timeout (seconds)",
@@ -211,28 +211,13 @@
     },
     "outputs": {
       "0": {
-        "name": "Text"
+        "name": "video"
       },
       "1": {
-        "name": "JSON"
+        "name": "URL"
       },
       "2": {
-        "name": "Images"
-      },
-      "3": {
-        "name": "Mask"
-      },
-      "4": {
-        "name": "Audio"
-      },
-      "5": {
-        "name": "Video"
-      },
-      "6": {
-        "name": "Task"
-      },
-      "7": {
-        "name": "References"
+        "name": "response"
       }
     }
   },

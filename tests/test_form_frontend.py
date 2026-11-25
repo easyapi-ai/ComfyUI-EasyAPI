@@ -7,6 +7,139 @@ from pathlib import Path
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is needed for frontend checks")
 class FormFrontendTests(unittest.TestCase):
+    def test_integer_duration_choices_use_only_declared_slider_stops(self):
+        script = r'''
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+class Element {
+  constructor(tag) {
+    this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {};
+    this.events = {}; this.attributes = {}; this.value = ''; this.className = '';
+    this.style = { setProperty() {} };
+  }
+  append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
+  replaceChildren(...children) { this.children = []; this.append(...children); }
+  addEventListener(type, handler) { (this.events[type] ??= []).push(handler); }
+  fire(type, properties = {}) {
+    for (const handler of this.events[type] || []) handler({ preventDefault() {}, ...properties });
+  }
+  dispatchEvent(event) { this.fire(event.type); }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  setCustomValidity(message) { this.validationMessage = message; }
+  reportValidity() {} focus() {}
+  querySelectorAll(selector) { return descendants(this).filter((item) => selector === '[data-path]' && item.dataset.path); }
+}
+const descendants = (element) => element.children.flatMap((child) => [child, ...descendants(child)]);
+globalThis.Node = Element;
+globalThis.document = {
+  createElement: (tag) => new Element(tag),
+  createTextNode: (text) => Object.assign(new Element('text'), { textContent: text }),
+};
+const { renderSchemaForm } = await import(pathToFileURL(process.argv[1]));
+const { estimateFacts } = await import(new URL('./node-billing.js', pathToFileURL(process.argv[1])));
+const t = (key) => ({ smartDuration: 'Smart (-1)', durationUnset: 'Unset' }[key] || key);
+const form = (definition, initial = {}, key = 'duration') => {
+  const container = new Element('div'); let params = initial;
+  renderSchemaForm(container, { properties: { [key]: definition } }, () => params, (next) => { params = next; }, t);
+  return {
+    input: () => descendants(container).find((item) => item.dataset.path === JSON.stringify([key])),
+    params: () => params,
+    reset() {
+      const field = descendants(container).find((item) => item.className.includes('ea-form-field'));
+      field.children[0].children.at(-1).fire('click');
+    },
+  };
+};
+const allowed = [-1, ...Array.from({ length: 29 }, (_, index) => index + 2)];
+const wan = form({ type: 'integer', enum: allowed, default: 5 });
+let slider = wan.input();
+assert.equal(slider.type, 'range', 'Wan integer enum must retain the duration slider');
+assert.deepEqual([slider.min, slider.max, slider.value], ['0', '29', '4']);
+assert.deepEqual(wan.params(), {}, 'Rendering a model default must not save an explicit duration');
+let [minus, track, plus] = slider.parentElement.parentElement.children;
+assert.equal(track.children.at(-1).textContent, '5');
+assert.equal(slider.attributes['aria-valuetext'], '5');
+slider.value = '11'; slider.fire('change');
+assert.equal(wan.params().duration, 12, 'Slider positions must save the original duration, not the index');
+slider.value = '0'; slider.fire('input');
+assert.equal(track.children.at(-1).textContent, 'Smart (-1)');
+assert.equal(wan.params().duration, 12, 'A drag preview must not commit until change');
+slider.fire('change'); assert.equal(wan.params().duration, -1);
+assert.equal(minus.disabled, true);
+plus.fire('click'); assert.equal(wan.params().duration, 2);
+minus.fire('click'); assert.equal(wan.params().duration, -1);
+const visited = [];
+for (let stop = 0; stop < allowed.length; ++stop) {
+  slider.value = String(stop); slider.fire('change'); visited.push(wan.params().duration);
+  const requestParams = JSON.parse(JSON.stringify(wan.params()));
+  const quote = estimateFacts({ model: 'wan3.0-video', operation: 'video-generation', params: requestParams, inputs: [] });
+  assert.equal(quote.duration, allowed[stop], 'Pricing facts and submitted JSON must use the displayed duration');
+}
+assert.deepEqual(visited, allowed, 'Every stop must be a declared value; zero and one are not durations');
+assert.equal(plus.disabled, true);
+wan.reset();
+assert.deepEqual(wan.params(), {}); assert.equal(slider.value, '4');
+assert.equal(track.children.at(-1).textContent, '5');
+
+// Imported unsupported values remain intact until the user explicitly edits or resets them.
+const imported = form({ type: 'integer', enum: allowed, default: 5 }, { duration: 1, seed: 0 });
+assert.equal(imported.input().tagName, 'SELECT');
+assert.equal(imported.input().value, '1');
+assert.deepEqual(imported.params(), { duration: 1, seed: 0 });
+imported.input().value = '12'; imported.input().fire('change');
+assert.equal(imported.input().type, 'range');
+assert.deepEqual(imported.params(), { duration: 12, seed: 0 });
+assert.equal(imported.input().value, '11');
+imported.reset(); assert.deepEqual(imported.params(), { seed: 0 });
+assert.equal(imported.input().value, '4');
+const resetImported = form({ type: 'integer', enum: allowed, default: 5 }, { duration: 1 });
+resetImported.reset();
+assert.deepEqual(resetImported.params(), {}); assert.equal(resetImported.input().type, 'range');
+
+// Sparse choices are discrete stops, including the first stop of an unset optional field.
+const sparse = form({ type: 'integer', enum: [10, 5, 10] }, {}, 'seconds');
+slider = sparse.input();
+assert.deepEqual([slider.type, slider.min, slider.max], ['range', '0', '1']);
+[minus, track, plus] = slider.parentElement.parentElement.children;
+assert.equal(track.children.at(-1).textContent, '—');
+assert.deepEqual(sparse.params(), {});
+slider.fire('click'); assert.deepEqual(sparse.params(), { seconds: 5 });
+plus.fire('click'); assert.deepEqual(sparse.params(), { seconds: 10 });
+assert.equal(slider.attributes['aria-valuetext'], '10');
+minus.fire('click'); assert.deepEqual(sparse.params(), { seconds: 5 });
+sparse.reset(); assert.deepEqual(sparse.params(), {});
+slider.fire('keydown', { key: 'Home' }); assert.deepEqual(sparse.params(), { seconds: 5 });
+const smartUnset = form({ type: 'integer', enum: allowed });
+smartUnset.input().fire('keydown', { key: 'Home' });
+assert.deepEqual(smartUnset.params(), { duration: -1 });
+smartUnset.reset(); assert.deepEqual(smartUnset.params(), {});
+assert.equal(smartUnset.input().attributes['aria-valuetext'], 'Unset');
+
+// Existing bounded and smart anyOf schemas keep their previous range coordinates.
+const bounded = form({ type: 'integer', minimum: 2, maximum: 30, default: 5 });
+slider = bounded.input();
+assert.deepEqual([slider.type, slider.min, slider.max, slider.value], ['range', '2', '30', '5']);
+slider.value = '10'; slider.fire('change'); assert.deepEqual(bounded.params(), { duration: 10 });
+bounded.reset(); assert.deepEqual(bounded.params(), {}); assert.equal(slider.value, '5');
+const anyOf = form({ type: 'integer', anyOf: [{ const: -1 }, { type: 'integer', minimum: 4, maximum: 30 }] });
+slider = anyOf.input();
+assert.deepEqual([slider.type, slider.min, slider.max], ['range', '3', '30']);
+slider.fire('keydown', { key: 'Home' }); assert.deepEqual(anyOf.params(), { duration: -1 });
+slider.parentElement.parentElement.children.at(-1).fire('click');
+assert.deepEqual(anyOf.params(), { duration: 4 });
+
+// Noninteger enums and unrelated numeric parameters keep their existing controls.
+assert.equal(form({ type: 'integer', enum: [5, '10'] }).input().tagName, 'SELECT');
+assert.equal(form({ type: 'integer', enum: [5] }).input().tagName, 'SELECT');
+assert.equal(form({ type: 'integer', enum: [5, 10] }, {}, 'seed').input().tagName, 'SELECT');
+'''
+        result = subprocess.run(
+            [shutil.which("node"), "--input-type=module", "-e", script,
+             str(Path(__file__).parents[1] / "web" / "ui-forms.js")],
+            encoding="utf-8", capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_selection_drafts_forms_language_and_video_ports(self):
         script = r'''
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -347,6 +480,8 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   assert.ok(video.videoError.textContent.includes('Connections have been preserved'));
   assert.ok(video.videoCSS.includes('outline:')); assert.ok(!video.videoCSS.includes('display:none'));
   assert.equal(videoNode.inputs[referenceIndex].link, 8);
+  fixtures.models = [...fixtures.models, { id: 'seedance-2.5' }];
+  await video.refreshModels(true);
   const seedanceNode = makeNode('EasyAPIVideo', { values: { profile_id: 'p2', model: 'seedance-2.5', operation: 'video-generation', prompt: '', params_json: '{}', mode: 'auto' } });
   const seedance = new h.NodePanel(seedanceNode); body.append(seedance.root); await tick();
   const readDuration = () => JSON.parse(get(seedanceNode, 'params_json')).duration;

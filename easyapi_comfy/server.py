@@ -312,8 +312,11 @@ def build_routes(runtime=None):
     @_guard
     async def list_prompt_models(request):
         locale = normalize_locale(request.query.get("locale"))
-        _, rows = await prompt_models(rt, request.query.get("profile_id"), locale)
-        return web.json_response({"models": rows}, headers={"Cache-Control": "no-store"})
+        client, rows = await prompt_models(rt, request.query.get("profile_id"), locale,
+                                          refresh=request.query.get("refresh") in {"1", "true"})
+        return web.json_response({"models": rows, "empty": not rows, "authority": "api_key", "locale": locale,
+                                  "cache_ttl": client.model_catalog_cache_seconds(locale)},
+                                 headers={"Cache-Control": "no-store"})
 
     @routes.post("/easyapi/prompt/transform")
     @_guard

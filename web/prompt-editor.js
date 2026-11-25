@@ -426,8 +426,8 @@ export class PromptEditor {
       this.popup.style.left = Math.max(margin, (window.innerWidth - this.popup.offsetWidth) / 2) + "px";
       this.popup.style.top = margin + "px";
       this.popup.style.bottom = "auto";
-      this.popup.style.height = Math.max(0, window.innerHeight - margin * 2) + "px";
-      this.popup.style.maxHeight = this.popup.style.height;
+      this.popup.style.height = "auto";
+      this.popup.style.maxHeight = Math.max(0, Math.min(760, window.innerHeight - margin * 2)) + "px";
       return;
     }
     this.popup.style.height = "auto";
@@ -455,6 +455,7 @@ export class PromptEditor {
     this.wanOpenToken = (this.wanOpenToken || 0) + 1;
     this.modelRequest = this.transformRequest = null;
     this.result = null;
+    this.checkTransformScope = null;
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("scroll", this.onScroll, true);
     if (this.nativePopover) {
@@ -539,6 +540,9 @@ export class PromptEditor {
       /^(zh-TW|zh-Hant)$/i.test(this.getLocale()) ? "zh-TW" : "zh";
     language.value = this.language || defaultLanguage;
     const status = element("p", { className: "ea-prompt-status", role: "status" });
+    const catalogStatus = element("span", { className: "ea-caption", role: "status" });
+    const retry = button(this.t("retryModels"), () => refreshModels(true));
+    retry.hidden = true;
     const resultText = element("textarea", { rows: 3, readOnly: true });
     const useResult = button(this.t("promptUseResult"), () => {
       if (this.result?.revision !== this.revision) { this.invalidateResult(); return; }
@@ -558,15 +562,27 @@ export class PromptEditor {
     if (mode === "translate") controls.push(field(this.t("promptTranslationLanguage"), language));
     this.body.replaceChildren(element("div", { className: "ea-prompt-form" }, ...controls),
       element("p", { className: "ea-caption", textContent: this.t("promptTransformCost") }),
+      element("div", { className: "ea-model-updates" }, catalogStatus, retry),
       status, element("div", { className: "ea-prompt-actions" }, run), result);
     profile.replaceChildren(option("", this.t("chooseConnection"), true),
       ...connections.map((entry) => option(entry.id, entry.name || entry.id)));
     profile.value = connections.some((entry) => entry.id === profileId) ? profileId : connections.length === 1 ? connections[0].id : "";
     profile.disabled = !connections.length;
 
+    let availableModels = [], loadedScopeKey;
+    const syncControls = () => {
+      const running = Boolean(this.transformRequest);
+      profile.disabled = running || !connections.length;
+      language.disabled = running;
+      model.disabled = running || !availableModels.length;
+      run.disabled = running || !model.value || !this.current.text.trim();
+    };
+    const scopeKey = () => JSON.stringify([profile.value,
+      this.getContext().profiles?.find((row) => row.id === profile.value)?.model_catalog_revision, this.getLocale()]);
     const clearResult = () => { result.hidden = true; status.textContent = ""; };
-    const refreshModels = async () => {
+    const refreshModels = async (refresh = false) => {
       this.modelRequest?.abort();
+      this.transformRequest?.abort(); this.transformRequest = null;
       const request = new AbortController();
       this.modelRequest = request;
       clearResult();
@@ -574,20 +590,42 @@ export class PromptEditor {
       model.value = "";
       model.disabled = run.disabled = true;
       const id = profile.value;
-      if (!id) { status.textContent = this.t("profileNeeded"); return; }
-      status.textContent = this.t("loadingModels");
-      try {
-        const choices = (await this.loadModels(id, request.signal)).filter((item) => item.id);
-        if (request.signal.aborted) return;
-        const preferred = this.preferredModels.get(id) || (id === profileId ? modelId : "");
-        model.append(...choices.map((item) => option(item.id,
+      loadedScopeKey = scopeKey(); availableModels = [];
+      syncControls();
+      if (!id) { catalogStatus.textContent = this.t("profileNeeded"); return; }
+      catalogStatus.textContent = this.t("loadingModels"); retry.hidden = true;
+      let applied;
+      const applyModels = (models) => {
+        if (request.signal.aborted || applied === models) return;
+        const replacing = applied !== undefined, previous = model.value;
+        const choices = models.filter((item) => item.id);
+        availableModels = choices;
+        applied = models;
+        const preferred = replacing ? previous : this.preferredModels.get(id) || (id === profileId ? modelId : "");
+        model.replaceChildren(option("", this.t("chooseModel"), true), ...choices.map((item) => option(item.id,
           item.display_name && item.display_name !== item.id ? item.display_name + " · " + item.id : item.id)));
-        model.value = choices.some((item) => item.id === preferred) ? preferred : choices.length === 1 ? choices[0].id : "";
-        model.disabled = !choices.length;
-        run.disabled = !model.value || !this.current.text.trim();
-        status.textContent = choices.length ? "" : this.t("noModels");
+        model.value = choices.some((item) => item.id === preferred) ? preferred : !replacing && choices.length === 1 ? choices[0].id : "";
+        if (replacing && previous !== model.value) { this.transformRequest?.abort(); this.transformRequest = null; clearResult(); }
+        syncControls();
+        catalogStatus.textContent = choices.length ? "" : this.t("noModels");
+      };
+      const update = (state) => {
+        if (request.signal.aborted) return;
+        if (state.invalidated) {
+          request.abort();
+          this.transformRequest?.abort(); this.transformRequest = null; clearResult(); applied = undefined;
+          availableModels = [];
+          model.replaceChildren(option("", this.t("chooseModel"), true)); model.value = "";
+          syncControls();
+        } else if (state.models) applyModels(state.models);
+        retry.hidden = !state.error && !state.invalidated;
+        if (state.error) catalogStatus.textContent = state.invalidated ? state.error.message : this.t("modelUpdateFailed");
+        else if (state.updating) catalogStatus.textContent = this.t(state.value ? "updatingModels" : "loadingModels");
+      };
+      try {
+        applyModels(await this.loadModels(id, request.signal, update, { profiles: this.getContext().profiles, refresh }));
       } catch (error) {
-        if (!request.signal.aborted) status.textContent = error.message || this.t("promptTransformFailed");
+        if (!request.signal.aborted) { catalogStatus.textContent = error.message || this.t("promptTransformFailed"); retry.hidden = false; }
       }
     };
     const runTransform = async () => {
@@ -615,19 +653,18 @@ export class PromptEditor {
       } catch (error) {
         if (!request.signal.aborted) status.textContent = error.message || this.t("promptTransformFailed");
       } finally {
-        if (!request.signal.aborted) {
-          profile.disabled = !connections.length;
-          model.disabled = language.disabled = false;
-          run.disabled = !this.current.text.trim();
-        }
+        if (this.transformRequest === request) this.transformRequest = null;
+        if (this.mode === mode) syncControls();
       }
     };
-    profile.addEventListener("change", refreshModels);
+    profile.addEventListener("change", () => refreshModels());
     model.addEventListener("change", () => {
+      this.preferredModels.set(profile.value, model.value);
       clearResult();
       run.disabled = !model.value || !this.current.text.trim();
     });
     language.addEventListener("change", () => { this.language = language.value; clearResult(); });
+    this.checkTransformScope = () => { if (scopeKey() !== loadedScopeKey) refreshModels(); };
     refreshModels();
   }
 
@@ -658,6 +695,7 @@ export class PromptEditor {
 
   contextChanged() {
     this.syncButtons();
+    this.checkTransformScope?.();
     this.wanPanel?.checkContext();
   }
 

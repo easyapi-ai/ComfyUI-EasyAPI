@@ -54,6 +54,34 @@ const make=async transform=>{
  return {panel,context,calls,applied};
 };
 {
+ let finish, update;
+ const context={profileId:'p1',modelId:'wan3.0-video',prompt:'Read.',params:{},profiles:[{id:'p1'}]};
+ const panel=new WanTunerPanel({t:key=>key,getContext:()=>context,
+  loadModels:(id,signal,onUpdate)=>{update=onUpdate;return new Promise(resolve=>{finish=resolve;});},
+  transform:async()=>{throw new Error('must not generate');},onApply(){}});
+ try {
+  const models=[{id:'vision',supports_image:true}];
+  update({value:{models},models,updating:true});
+  assert.equal(panel.model.value,'vision');
+  assert.equal(panel.analysisModel.value,'vision');
+  update({invalidated:true,error:new Error('Access changed')});
+  assert.equal(panel.modelRequest.signal.aborted,true);
+  assert.equal(panel.retryModels.hidden,false);
+  finish(models);await tick();
+  assert.equal(panel.model.value,'','An old cached promise cannot undo authorization failure');
+  assert.equal(panel.analysisModel.value,'');
+  assert.equal(panel.run.disabled,true);
+ } finally {panel.dispose();}
+}
+{
+ const {panel}=await make();
+ try {
+  panel.model.value='chat-small';panel.changed();
+  await panel.refreshModels();
+  assert.equal(panel.model.value,'chat-small','Refreshing the same connection preserves its model choice');
+ } finally {panel.dispose();}
+}
+{
  const {panel,context,calls,applied}=await make();
  try {
   const params=JSON.stringify(context.params);

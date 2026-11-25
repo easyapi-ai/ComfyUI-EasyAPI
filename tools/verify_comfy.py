@@ -71,12 +71,12 @@ def main():
         '03-image': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image', params_json='{"seed":0,"watermark":false}'), '2': node('SaveImage', images=['1', 0], filename_prefix='EasyAPI-verify/image')},
         '04-image-edit': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIImages', 'image-edit', 'mock-image', image=['1', 0]), '3': node('SaveImage', images=['2', 0], filename_prefix='EasyAPI-verify/edit')},
         '05-image-response': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': node('EasyAPIPreview', text=['1', 1], json_value=['1', 2]), '3': node('SaveImage', images=['1', 0], filename_prefix='EasyAPI-verify/image-response')},
-        '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/video')},
-        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 0], last_frame=['1', 0], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/frames')},
+        '06-video': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video'), '2': node('SaveVideo', video=['1', 0], filename_prefix='EasyAPI-verify/video')},
+        '07-video-references': {'1': creative('EasyAPIImages', 'image-generation', 'mock-image'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video-frames', first_frame=['1', 0], last_frame=['1', 0], params_json='{"resolution":"480p"}'), '3': node('SaveVideo', video=['2', 0], filename_prefix='EasyAPI-verify/frames')},
         '08-speech-transcribe': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPITranscribe', 'audio-transcriptions', 'mock-transcribe', audio=['1', 4]), '3': preview('2'), '4': node('SaveAudio', audio=['1', 4], filename_prefix='EasyAPI-verify/speech')},
         '10-claude-messages': {'1': creative('EasyAPIChat', 'messages', 'mock-text', params_json='{"max_tokens":16}'), '2': preview('1')},
-        '11-video-audio-reference': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video', reference_audio_1=['1', 4], params_json='{"generate_audio":false}'), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/audio-reference')},
-        '12-split-task': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video', wait_for_result=False), '2': node('EasyAPITaskWait', profile_id='mock', task=['1', 6]), '3': node('SaveVideo', video=['2', 5], filename_prefix='EasyAPI-verify/task-video')},
+        '11-video-audio-reference': {'1': creative('EasyAPISpeech', 'audio-speech', 'mock-audio'), '2': creative('EasyAPIVideo', 'video-generation', 'mock-video', reference_audio_1=['1', 4], params_json='{"generate_audio":false}'), '3': node('SaveVideo', video=['2', 0], filename_prefix='EasyAPI-verify/audio-reference')},
+        '12-split-task': {'1': creative('EasyAPIVideo', 'video-generation', 'mock-video', wait_for_result=False), '2': node('EasyAPIPreview', json_value=['1', 2])},
         '13-json-tools': {'1': node('EasyAPIJSON', operation='parse', params_json='{"zero":0,"off":false,"nested":[1,2]}'), '2': node('EasyAPIPreview', text=['1', 1], json_value=['1', 0])},
     }
     output = Path(args.output)
@@ -85,6 +85,18 @@ def main():
     examples = Path('examples/api')
     if args.write_examples:
         examples.mkdir(parents=True, exist_ok=True)
+    def run_graph(graph, started):
+        queued = call('/prompt', {'prompt': graph, 'client_id': 'easyapi-verification-' + uuid.uuid4().hex})
+        prompt_id = queued['prompt_id']
+        while time.monotonic() - started < 100:
+            histories = call('/history/' + prompt_id)
+            if prompt_id in histories:
+                history = histories[prompt_id]
+                if history.get('status', {}).get('status_str') == 'error':
+                    raise RuntimeError(json.dumps(history['status'], ensure_ascii=False)[:4000])
+                return prompt_id, history
+            time.sleep(.3)
+        raise TimeoutError('Comfy workflow did not finish')
     for name, graph in cases.items():
         if args.cases and name not in args.cases.split(','):
             continue
@@ -92,21 +104,16 @@ def main():
             (examples / (name + '.json')).write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding='utf-8')
         started = time.monotonic()
         try:
-            queued = call('/prompt', {'prompt': graph, 'client_id': 'easyapi-verification-' + uuid.uuid4().hex})
-            prompt_id = queued['prompt_id']
-            while time.monotonic() - started < 100:
-                histories = call('/history/' + prompt_id)
-                if prompt_id in histories:
-                    history = histories[prompt_id]
-                    status = history.get('status', {})
-                    if status.get('status_str') == 'error':
-                        raise RuntimeError(json.dumps(status, ensure_ascii=False)[:4000])
-                    results.append({'case': name, 'ok': True, 'prompt_id': prompt_id, 'outputs': history.get('outputs', {}), 'elapsed': round(time.monotonic() - started, 3)})
-                    print(name, 'PASS', flush=True)
-                    break
-                time.sleep(.3)
-            else:
-                raise TimeoutError('Comfy workflow did not finish')
+            prompt_id, history = run_graph(graph, started)
+            if name == '12-split-task':
+                handle = history.get('outputs', {}).get('1', {}).get('easyapi_task', [{}])[0]
+                if not handle.get('task_id'):
+                    raise RuntimeError('Submit-only video did not publish a recoverable task ID')
+                resumed = {'1': node('EasyAPITaskWait', profile_id='mock', task_id=handle['task_id']),
+                           '2': node('SaveVideo', video=['1', 5], filename_prefix='EasyAPI-verify/task-video')}
+                prompt_id, history = run_graph(resumed, started)
+            results.append({'case': name, 'ok': True, 'prompt_id': prompt_id, 'outputs': history.get('outputs', {}), 'elapsed': round(time.monotonic() - started, 3)})
+            print(name, 'PASS', flush=True)
         except Exception as error:
             results.append({'case': name, 'ok': False, 'error': str(error), 'elapsed': round(time.monotonic() - started, 3)})
             print(name, 'FAIL', str(error)[:500], flush=True)

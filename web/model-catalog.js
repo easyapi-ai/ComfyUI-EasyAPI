@@ -1,10 +1,18 @@
-const STORAGE_KEY = "easyapi.modelCatalog.v1";
+const STORAGE_KEY = "easyapi.modelCatalog.v2";
 const MAX_AGE_MS = 120_000;
+const MAX_STALE_MS = 86_400_000;
 const MAX_ENTRIES = 24;
 const MAX_STORAGE_LENGTH = 400_000;
 
+function cancelled() {
+  const error = new Error("The model connection changed");
+  error.name = "AbortError";
+  return error;
+}
+
 function forConsumer(promise, signal) {
   if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
@@ -18,12 +26,17 @@ function storageResult(value) {
     if (typeof model === "string") return [model];
     const id = model?.id || model?.name;
     if (typeof id !== "string" || !id) return [];
-    return [{
-      id,
-      name: typeof model.name === "string" ? model.name : undefined,
-      display_name: typeof model.display_name === "string" ? model.display_name : undefined,
-      capability_status: typeof model.capability_status === "string" ? model.capability_status : undefined,
-    }];
+    const entry = { id };
+    for (const field of ["name", "display_name", "capability_status"]) {
+      if (typeof model[field] === "string") entry[field] = model[field];
+    }
+    for (const field of ["supports_image", "supports_video"]) {
+      if (typeof model[field] === "boolean") entry[field] = model[field];
+    }
+    if (Array.isArray(model.input_modalities)) {
+      entry.input_modalities = model.input_modalities.filter((kind) => ["text", "image", "video", "audio"].includes(kind));
+    }
+    return [entry];
   });
   return { models, empty: !models.length, authority: "api_key", operation: value.operation, locale: value.locale };
 }
@@ -31,24 +44,29 @@ function storageResult(value) {
 export function createModelCatalog(request, { now = Date.now, storage = () => globalThis.localStorage } = {}) {
   const memory = new Map();
   const pending = new Map();
-  const fresh = (record) => {
-    const remaining = record?.expiresAt - now();
-    return remaining > 0 && remaining <= MAX_AGE_MS;
-  };
+  const listeners = new Map();
+  const errors = new Map();
+  const revisions = new Map();
+  const superseded = new Map();
+  const epochs = new Map();
+  const retained = (record) => Number.isFinite(record?.savedAt) && Number.isFinite(record?.expiresAt) &&
+    record.savedAt <= now() && record.staleUntil > now() && record.staleUntil <= record.savedAt + MAX_STALE_MS &&
+    record.expiresAt <= record.savedAt + MAX_AGE_MS;
+  const fresh = (record) => retained(record) && record.expiresAt > now();
 
   function readStorage() {
     try {
       const raw = storage()?.getItem(STORAGE_KEY);
       if (!raw || raw.length > MAX_STORAGE_LENGTH) return [];
       const records = JSON.parse(raw);
-      return Array.isArray(records) ? records.filter((record) => fresh(record) &&
+      return Array.isArray(records) ? records.filter((record) => retained(record) &&
         typeof record.key === "string" && typeof record.profileId === "string" && Array.isArray(record.value?.models)) : [];
     } catch { return []; }
   }
 
   function writeStorage(records) {
     try {
-      const bounded = records.filter(fresh).slice(0, MAX_ENTRIES);
+      const bounded = records.filter(retained).slice(0, MAX_ENTRIES);
       let raw = JSON.stringify(bounded);
       while (raw.length > MAX_STORAGE_LENGTH) {
         bounded.pop();
@@ -59,54 +77,147 @@ export function createModelCatalog(request, { now = Date.now, storage = () => gl
     } catch { /* Storage can be unavailable or reach browser quota. */ }
   }
 
-  function invalidate(profileId) {
+  function scopeOf(input) {
+    const scope = { profileId: String(input.profileId || ""), revision: String(input.revision || ""),
+      family: String(input.family || ""), operation: String(input.operation || ""), locale: String(input.locale || ""),
+      purpose: input.purpose === "prompt" ? "prompt" : "models" };
+    scope.key = JSON.stringify([scope.profileId, scope.revision, scope.family, scope.operation, scope.locale, scope.purpose]);
+    return scope;
+  }
+
+  function recordFor(scope) {
+    let record = memory.get(scope.key);
+    if (!retained(record)) {
+      memory.delete(scope.key);
+      record = scope.revision && readStorage().find((entry) => entry.key === scope.key);
+      if (record) {
+        memory.set(scope.key, record);
+        if (memory.size > MAX_ENTRIES) memory.delete(memory.keys().next().value);
+      }
+    }
+    return record || null;
+  }
+
+  function stateFor(scope, extra = {}) {
+    const record = recordFor(scope);
+    return { value: record?.value, stale: !!record && !fresh(record), updating: pending.has(scope.key),
+      error: errors.get(scope.key)?.error || null, invalidated: false, ...extra };
+  }
+
+  function emit(scope, extra) {
+    const state = stateFor(scope, extra);
+    for (const listener of listeners.get(scope.key)?.callbacks || []) {
+      try { listener(state); } catch { /* One viewer must not interrupt other viewers. */ }
+    }
+  }
+
+  function invalidate(profileId, error = null) {
     if (!profileId) return;
+    epochs.set(profileId, (epochs.get(profileId) || 0) + 1);
     for (const cache of [memory, pending]) {
       for (const [key, record] of cache) if (record.profileId === profileId) cache.delete(key);
     }
+    for (const [key, record] of errors) if (record.profileId === profileId) errors.delete(key);
     writeStorage(readStorage().filter((record) => record.profileId !== profileId));
-  }
-
-  function remember(key, profileId, revision, value, startedAt) {
-    const ttl = Number.isFinite(value?.cache_ttl) ? value.cache_ttl * 1000 : MAX_AGE_MS;
-    const expiresAt = Math.min(startedAt + MAX_AGE_MS, now() + ttl);
-    const record = { key, profileId, value, expiresAt };
-    if (!fresh(record)) return;
-    memory.set(key, record);
-    if (memory.size > MAX_ENTRIES) memory.delete(memory.keys().next().value);
-    if (!revision) return;
-    const small = storageResult(value);
-    if (small) writeStorage([{ ...record, value: small }, ...readStorage().filter((entry) => entry.key !== key)]);
-  }
-
-  async function get({ profileId, family = "", operation = "", locale = "", revision = "", refresh = false, signal }) {
-    if (signal?.aborted) throw signal.reason;
-    const key = JSON.stringify([profileId, revision, family, operation, locale]);
-    const inflight = pending.get(key);
-    if (inflight && (!refresh || inflight.refresh)) return forConsumer(inflight.promise, signal);
-    if (refresh) invalidate(profileId);
-    else {
-      const cached = memory.get(key);
-      if (fresh(cached)) return cached.value;
-      memory.delete(key);
-      const stored = revision && readStorage().find((record) => record.key === key);
-      if (stored) return stored.value;
+    for (const { scope } of listeners.values()) {
+      if (scope.profileId !== profileId) continue;
+      errors.delete(scope.key);
+      emit(scope, { value: undefined, stale: false, updating: false, error, invalidated: true });
     }
+  }
+
+  function prepare(input) {
+    const scope = scopeOf(input);
+    const previous = revisions.get(scope.profileId);
+    if (superseded.get(scope.profileId)?.has(scope.revision)) return null;
+    if (previous !== undefined && previous !== scope.revision) {
+      const old = superseded.get(scope.profileId) || new Set();
+      old.add(previous); superseded.set(scope.profileId, old);
+      revisions.set(scope.profileId, scope.revision);
+      invalidate(scope.profileId);
+    }
+    revisions.set(scope.profileId, scope.revision);
+    return scope;
+  }
+
+  function remember(scope, value, startedAt) {
+    const savedAt = now();
+    const ttl = Number.isFinite(value?.cache_ttl) ? Math.max(0, value.cache_ttl * 1000) : MAX_AGE_MS;
+    const record = { key: scope.key, profileId: scope.profileId, value, savedAt,
+      expiresAt: Math.min(startedAt + MAX_AGE_MS, savedAt + ttl), staleUntil: savedAt + MAX_STALE_MS };
+    memory.set(scope.key, record);
+    if (memory.size > MAX_ENTRIES) memory.delete(memory.keys().next().value);
+    if (!scope.revision) return;
+    const small = storageResult(value);
+    if (small) writeStorage([{ ...record, value: small }, ...readStorage().filter((entry) => entry.key !== scope.key)]);
+  }
+
+  function start(scope, refresh) {
+    const inflight = pending.get(scope.key);
+    if (inflight && (!refresh || inflight.refresh)) return inflight.promise;
+    const epoch = epochs.get(scope.profileId) || 0;
     const startedAt = now();
-    const record = { profileId, refresh };
-    const query = new URLSearchParams({ profile_id: profileId, family, operation, locale, refresh: refresh ? "1" : "0" });
-    record.promise = Promise.resolve().then(() => request(`/easyapi/models?${query}`)).then((value) => {
-      if (pending.get(key) === record) remember(key, profileId, revision, value, startedAt);
+    const record = { profileId: scope.profileId, refresh };
+    const current = () => pending.get(scope.key) === record && (epochs.get(scope.profileId) || 0) === epoch &&
+      revisions.get(scope.profileId) === scope.revision;
+    const query = new URLSearchParams({ profile_id: scope.profileId, family: scope.family,
+      operation: scope.operation, locale: scope.locale, refresh: refresh ? "1" : "0" });
+    const path = scope.purpose === "prompt" ? "/easyapi/prompt/models" : "/easyapi/models";
+    errors.delete(scope.key);
+    record.promise = Promise.resolve().then(() => request(`${path}?${query}`)).then((value) => {
+      if (!current()) throw cancelled();
+      remember(scope, value, startedAt);
       return value;
     }, (error) => {
-      if (pending.get(key) === record && (error.status === 401 || error.status === 403)) invalidate(profileId);
+      if (current()) {
+        if (error.status === 401 || error.status === 403) invalidate(scope.profileId, error);
+        else errors.set(scope.key, { profileId: scope.profileId, error });
+      }
       throw error;
     }).finally(() => {
-      if (pending.get(key) === record) pending.delete(key);
+      if (pending.get(scope.key) === record) {
+        pending.delete(scope.key);
+        emit(scope);
+      }
     });
-    pending.set(key, record);
-    return forConsumer(record.promise, signal);
+    pending.set(scope.key, record);
+    emit(scope);
+    return record.promise;
   }
 
-  return { get, invalidate };
+  function peek(input) {
+    const scope = prepare(input);
+    const record = scope && recordFor(scope);
+    return record ? { value: record.value, stale: !fresh(record) } : null;
+  }
+
+  function subscribe(input, listener) {
+    const scope = prepare(input);
+    if (!scope) {
+      listener({ value: undefined, stale: false, updating: false, error: null, invalidated: true });
+      return () => {};
+    }
+    let entry = listeners.get(scope.key);
+    if (!entry) { entry = { scope, callbacks: new Set() }; listeners.set(scope.key, entry); }
+    entry.callbacks.add(listener);
+    listener(stateFor(scope));
+    return () => {
+      entry.callbacks.delete(listener);
+      if (!entry.callbacks.size) listeners.delete(scope.key);
+    };
+  }
+
+  async function get(input) {
+    if (input.signal?.aborted) throw input.signal.reason;
+    const scope = prepare(input);
+    if (!scope) throw cancelled();
+    const cached = recordFor(scope);
+    if (!input.refresh && cached) {
+      if (!fresh(cached)) start(scope, false).catch(() => {});
+      return cached.value;
+    }
+    return forConsumer(start(scope, input.refresh === true), input.signal);
+  }
+
+  return { get, peek, subscribe, invalidate };
 }
