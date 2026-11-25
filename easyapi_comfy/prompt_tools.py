@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import mimetypes
 import re
 from pathlib import Path
@@ -144,7 +145,12 @@ def _response_prompt_text(data):
     return value
 
 
-async def run_wan_request(client, body, locale, emit=None):
+async def run_wan_request(client, body, locale, emit=None, *, timeout_seconds=300, phase="tuning"):
+    if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("Choose a positive tuning timeout in seconds")
+    if phase not in {"analysis", "tuning"}:
+        raise ValueError("Choose an analysis or tuning request phase")
     parts, finish_reason = [], None
 
     async def consume(event):
@@ -172,10 +178,14 @@ async def run_wan_request(client, body, locale, emit=None):
         response = await asyncio.wait_for(
             client.request("POST", get_protocol("chat")["path"], body=body, stream=body["stream"],
                            locale=locale, on_event=consume if body["stream"] else None),
-            timeout=120,
+            timeout=timeout_seconds,
         )
     except TimeoutError as error:
-        raise EasyAPIError("Timed out while waiting for the tuning model.", status=504) from error
+        problem = EasyAPIError(f"Timed out during {phase} after {timeout_seconds:g} seconds while waiting for the tuning model.", status=504)
+        problem.tuning_phase = phase
+        problem.timeout_seconds = timeout_seconds
+        problem.code = problem.tuning_code = "tuning_timeout"
+        raise problem from error
     if response.content_type == "text/event-stream":
         if finish_reason != "stop":
             raise EasyAPIError("The tuning stream ended before a complete result was available.", status=502)

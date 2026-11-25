@@ -158,7 +158,11 @@ export class VideoTunerNodePanel {
     this.targetProfile.addEventListener("change", () => { this.write("target_profile_id", this.targetProfile.value); this.refreshVideoModels(); this.refreshSchema(); });
     this.onExecutionError = event => {
       const detail = event.detail || {};
-      if (this.promptId && detail.prompt_id === this.promptId) { this.queued = false; this.notice(detail.exception_message || this.text("tunerExecutionFailed", "Tuning failed"), true); this.syncRunButtons(); }
+      if (this.promptId && detail.prompt_id === this.promptId || String(detail.node_id) === String(this.node.id)) {
+        this.queued = false;
+        const error = new Error(detail.exception_message || this.text("tunerExecutionFailed", "Tuning failed"));
+        this.notice(error.message, true); this.syncRunButtons(); this.onError?.({ node: this.node, error });
+      }
     };
     this.api?.addEventListener?.("execution_error", this.onExecutionError);
     this.api?.addEventListener?.("execution_interrupted", this.onExecutionError);

@@ -25,6 +25,7 @@ from .prompt_tools import prompt_models, run_wan_request
 from .video import select_video_scenario
 
 RULES_VERSION = "video-tuning/1.0.0"
+TUNING_TIMEOUT_SECONDS = 300
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_BYTES = 24 * 1024 * 1024
 MAX_VIDEO_BYTES = 100 * 1024 * 1024
@@ -37,6 +38,18 @@ _SECRET_KEYS = {"api_key", "apikey", "authorization", "access_token", "token", "
 _MEDIA_FIELDS = {"image", "images", "input_reference", "input_references", "video", "audio", "file", "files", "messages", "model", "prompt"}
 _REFERENCE = re.compile(r"@(?:图片|图|image|视频|video|音频|audio)\s*([1-9]\d*)\b", re.I)
 _SERVICE_LOCK = threading.RLock()
+
+
+async def _emit(callback, event):
+    if callback is None:
+        return
+    try:
+        pending = callback(copy.deepcopy(event))
+        if inspect.isawaitable(pending):
+            await pending
+    except Exception:
+        # A view failing to receive progress cannot fail an already submitted request.
+        pass
 
 
 def _json(value):
@@ -469,18 +482,11 @@ class VideoTuningService:
     async def _notify(self, flight, event):
         with self._lock:
             subscribers = list(flight["subscribers"].values())
-        async def deliver(callback):
-            try:
-                pending = callback(copy.deepcopy(event))
-                if inspect.isawaitable(pending):
-                    await pending
-            except Exception:
-                pass
         for loop, callback in subscribers:
             if loop is asyncio.get_running_loop():
-                await deliver(callback)
+                await _emit(callback, event)
             elif not loop.is_closed():
-                asyncio.run_coroutine_threadsafe(deliver(callback), loop)
+                asyncio.run_coroutine_threadsafe(_emit(callback, event), loop)
 
     def _messages(self, prepared, source=None, analysis=False):
         context = prepared["context"]
@@ -570,18 +576,18 @@ class VideoTuningService:
                 nonlocal attempted
                 if not self._current(prepared):
                     raise ValueError("The selected connection changed; reload video tuning settings")
-                body = {"model": model, "messages": messages, "stream": True}
+                body = {"model": model, "messages": messages, "stream": False}
                 if len(_json(body).encode()) > 32 * 1024 * 1024:
                     raise ValueError("Tuning media and text exceed the request limit")
-                await self._notify(flight, {"phase": phase, "type": "phase"})
+                await self._notify(flight, {"phase": phase, "type": "phase", "state": "running",
+                                            "timeout_seconds": TUNING_TIMEOUT_SECONDS})
                 with self._lock:
                     state = self._read()
                     state["attempts"][key] = {"scope_id": prepared["scope_id"], "updated_at": time.time(), "state": "submitted"}
                     self._write(state)
                 attempted = True
-                async def delta(event, data):
-                    await self._notify(flight, {"phase": phase, "type": "delta", **data})
-                return await run_wan_request(prepared["client"], body, context["locale"], emit=delta)
+                return await run_wan_request(prepared["client"], body, context["locale"],
+                                             timeout_seconds=TUNING_TIMEOUT_SECONDS, phase=phase)
             if context["analyze"] and prepared["images"]:
                 raw = await call("analysis", context["analysis_model"], self._messages(prepared, analysis=True))
                 parsed = _object(raw["text"])
@@ -589,9 +595,21 @@ class VideoTuningService:
                     raise ValueError("Source analysis is missing evidence fields")
                 source = {name: _list(parsed.get(name), name) for name in ("facts", "uncertainties", "invariants")}
                 source["uncertainties"].extend(prepared["warnings"])
+                source = _public(source)
+                for identifier in prepared["revisions"]:
+                    source = redact(source, self.runtime.profiles.get(identifier).get("api_key", ""))
+                await self._notify(flight, {"phase": "analysis", "type": "phase", "state": "completed",
+                                            "sourceAnalysis": source})
             elif context["analyze"]:
                 source["uncertainties"].append("No ready visual evidence was available for analysis")
+                await self._notify(flight, {"phase": "analysis", "type": "phase", "state": "skipped",
+                                            "reason": "no_ready_visual_media"})
+            else:
+                await self._notify(flight, {"phase": "analysis", "type": "phase", "state": "skipped",
+                                            "reason": "no_analysis_model" if not context["analysis_model"] else "disabled"})
             raw = await call("tuning", context["model"], self._messages(prepared, source))
+            await self._notify(flight, {"phase": "tuning", "type": "phase", "state": "completed"})
+            await self._notify(flight, {"phase": "validation", "type": "phase", "state": "running"})
             result = self._result(raw["text"], prepared)
             if not self._current(prepared):
                 raise ValueError("The selected connection changed; the old result cannot be applied")
@@ -605,6 +623,7 @@ class VideoTuningService:
                 state["attempts"].pop(key, None)
                 state["success"][key] = {"scope_id": prepared["scope_id"], "updated_at": time.time(), "result": result}
                 self._write(state)
+            await self._notify(flight, {"phase": "validation", "type": "phase", "state": "completed"})
             flight["future"].set_result(result)
         except BaseException as error:
             if attempted:
@@ -625,7 +644,9 @@ class VideoTuningService:
     async def run(self, value, locale="zh-CN", emit=None):
         if self._closed:
             raise RuntimeError("Video tuning is shutting down")
+        await _emit(emit, {"phase": "preparing", "type": "phase", "state": "running"})
         prepared = await self._prepare(value, locale)
+        await _emit(emit, {"phase": "preparing", "type": "phase", "state": "completed"})
         key, loop, token = prepared["key"], asyncio.get_running_loop(), object()
         with self._lock:
             state = self._read()
@@ -638,7 +659,7 @@ class VideoTuningService:
                 flight = self._flights.get(key)
                 if flight is None:
                     if key in state["attempts"]:
-                        raise ValueError("This tuning revision was already submitted but did not finish reliably; increase nonce to explicitly tune again")
+                        raise ValueError("This tuning attempt was submitted but did not finish reliably. Use Tune again to start a new attempt; saved successful results are preserved.")
                     flight = {"future": concurrent.futures.Future(), "loop": loop, "subscribers": {}, "waiters": set()}
                     self._flights[key] = flight
                     flight["task"] = loop.create_task(self._execute(prepared, flight))
@@ -646,10 +667,7 @@ class VideoTuningService:
                 if emit is not None:
                     flight["subscribers"][token] = (loop, emit)
         if flight is None:
-            if emit:
-                event = emit({"phase": "cache", "type": "phase", "cache_hit": True})
-                if inspect.isawaitable(event):
-                    await event
+            await _emit(emit, {"phase": "cache", "type": "phase", "state": "completed", "cache_hit": True})
             return result
         try:
             waiter = asyncio.wrap_future(flight["future"])

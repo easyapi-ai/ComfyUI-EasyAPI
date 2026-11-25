@@ -358,6 +358,39 @@ Object.assign(zhTW, {
   tunerRestored: "已還原本機預覽；執行時會驗證伺服器快取。", tunerReady: "調優完成，提示詞輸出可連接影片節點。",
   tunerQueued: "調優節點已排程，按需執行上游依賴。",
 });
+Object.assign(en, {
+  videoProgressStages: "Tuning progress", videoProgressAnalysisPreview: "Media analysis", videoProgressResume: "Resume viewing",
+  videoProgressInvalidResult: "The model did not return a complete validated prompt.", videoProgressResuming: "Restoring the running task…",
+  videoProgressWaiting: "Waiting {seconds}s", videoProgressRunning: "In progress", videoProgressStepDone: "Done",
+  videoProgressStepFailed: "Failed", videoProgressCancelled: "Cancelled", videoProgressPaused: "Connection paused",
+  videoProgressComplete: "Complete · result validated", videoProgressConnectionLost: "Connection interrupted. The task may still be running; resume viewing its status.",
+  videoProgressUnknownStage: "Task", videoProgressTimeout: "{stage} timed out after {seconds}s", videoProgressFailed: "{stage} failed",
+  videoProgressNodeQueued: "Queued · running this tuner and its required upstream nodes",
+  videoProgressPhase_preparing: "Prepare media and model context", videoProgressPhase_analysis: "Analyze media",
+  videoProgressPhase_tuning: "Optimize prompt", videoProgressPhase_validation: "Validate result", videoProgressPhase_cache: "Reuse saved result",
+});
+Object.assign(zh, {
+  videoProgressStages: "调优进度", videoProgressAnalysisPreview: "素材分析", videoProgressResume: "恢复查看",
+  videoProgressInvalidResult: "模型未返回完整且有效的调优结果。", videoProgressResuming: "正在恢复运行中的任务…",
+  videoProgressWaiting: "已等待 {seconds} 秒", videoProgressRunning: "进行中", videoProgressStepDone: "已完成",
+  videoProgressStepFailed: "失败", videoProgressCancelled: "已取消", videoProgressPaused: "连接暂停",
+  videoProgressComplete: "调优完成，结果已通过校验", videoProgressConnectionLost: "连接中断，任务可能仍在运行。可恢复查看，不会重新提交模型请求。",
+  videoProgressUnknownStage: "任务", videoProgressTimeout: "{stage}超时（{seconds} 秒）", videoProgressFailed: "{stage}失败",
+  videoProgressNodeQueued: "已排队，正在执行调优节点及所需上游",
+  videoProgressPhase_preparing: "准备素材与模型上下文", videoProgressPhase_analysis: "分析素材",
+  videoProgressPhase_tuning: "调优提示词", videoProgressPhase_validation: "校验结果", videoProgressPhase_cache: "复用已有结果",
+});
+Object.assign(zhTW, {
+  videoProgressStages: "調優進度", videoProgressAnalysisPreview: "素材分析", videoProgressResume: "恢復查看",
+  videoProgressInvalidResult: "模型未傳回完整且有效的調優結果。", videoProgressResuming: "正在恢復執行中的任務…",
+  videoProgressWaiting: "已等待 {seconds} 秒", videoProgressRunning: "進行中", videoProgressStepDone: "已完成",
+  videoProgressStepFailed: "失敗", videoProgressCancelled: "已取消", videoProgressPaused: "連線暫停",
+  videoProgressComplete: "調優完成，結果已通過驗證", videoProgressConnectionLost: "連線中斷，任務可能仍在執行。可恢復查看，不會重新提交模型請求。",
+  videoProgressUnknownStage: "任務", videoProgressTimeout: "{stage}逾時（{seconds} 秒）", videoProgressFailed: "{stage}失敗",
+  videoProgressNodeQueued: "已排程，正在執行調優節點及必要上游",
+  videoProgressPhase_preparing: "準備素材與模型情境", videoProgressPhase_analysis: "分析素材",
+  videoProgressPhase_tuning: "調優提示詞", videoProgressPhase_validation: "驗證結果", videoProgressPhase_cache: "重用現有結果",
+});
 export function hostLocale() { return app.extensionManager?.setting?.get("Comfy.Locale") || "en"; }
 export function localeQuery() { return hostLocale(); }
 export function textKey(text) {

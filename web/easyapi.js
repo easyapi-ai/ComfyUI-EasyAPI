@@ -1390,6 +1390,7 @@ app.registerExtension({
           new URLSearchParams({ profile_id: profileId, model: modelId, operation: "video-generation", locale: locale || localeQuery() }), { signal }),
         openDetails: showTunerDetails,
         onResult: ({ node, result }) => node.easyapiTuningEditor?.wanPanel?.setResult(result, { stale: false }),
+        onError: ({ node, error }) => node.easyapiTuningEditor?.wanPanel?.failProgress(error),
         onDispose: ({ node }) => { node.easyapiTuningEditor?.dispose(); node.easyapiTuningEditor?.root.remove(); },
       });
       return;

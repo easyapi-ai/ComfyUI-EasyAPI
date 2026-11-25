@@ -8,11 +8,12 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from PIL import Image
 from easyapi_comfy.client import APIResponse, EasyAPIError
 from easyapi_comfy.media import MediaSource
 from easyapi_comfy.runtime import Runtime
+from easyapi_comfy.prompt_tools import run_wan_request
 from easyapi_comfy.video_tuning import VideoTuningService, get_video_tuning, _sample_times
 
 
@@ -87,6 +88,73 @@ class VideoTuningTests(unittest.IsolatedAsyncioTestCase):
         path = self.runtime.input_dir / name
         path.write_bytes(image_bytes(color))
         return MediaSource("image", path, role, "image/png")
+
+    async def test_two_phase_requests_are_nonstream_with_only_completed_structured_analysis(self):
+        events = []
+        async def emit(event):
+            events.append(event)
+        result = await self.service.run(self.value | {"media": [self.local_image()], "analysis_model": "vision", "analyze": True}, emit=emit)
+        self.assertEqual([body["stream"] for _, body in self.calls], [False, False])
+        self.assertTrue(all(event["type"] == "phase" and "text" not in event for event in events))
+        self.assertEqual([(event["phase"], event["state"]) for event in events], [
+            ("preparing", "running"), ("preparing", "completed"), ("analysis", "running"), ("analysis", "completed"),
+            ("tuning", "running"), ("tuning", "completed"), ("validation", "running"), ("validation", "completed")])
+        analysis = next(event for event in events if event["phase"] == "analysis" and event["state"] == "completed")
+        self.assertEqual(analysis["sourceAnalysis"], result["sourceAnalysis"])
+
+    async def test_preflight_feedback_analysis_skipped_and_cache_hit_are_explicit(self):
+        events = []
+        async def emit(event):
+            events.append(event)
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            await self.service.run(self.value | {"params": False}, emit=emit)
+        self.assertEqual(events[0], {"phase": "preparing", "type": "phase", "state": "running"})
+        events.clear()
+        await self.service.run(self.value, emit=emit)
+        skipped = next(event for event in events if event["phase"] == "analysis")
+        self.assertEqual(skipped["state"], "skipped")
+        events.clear()
+        result = await self.service.run(self.value, emit=emit)
+        self.assertTrue(result["cache_hit"])
+        self.assertEqual([(event["phase"], event["state"]) for event in events], [
+            ("preparing", "running"), ("preparing", "completed"), ("cache", "completed")])
+        self.assertTrue(events[-1]["cache_hit"])
+
+    async def test_timeout_is_phase_specific_300_seconds_and_never_retries_paid_post(self):
+        good = await self.service.run(self.value)
+        for phase in ("analysis", "tuning"):
+            with self.subTest(phase=phase):
+                self.failure = TimeoutError()
+                options = {"nonce": phase}
+                if phase == "analysis":
+                    options.update(media=[self.local_image()], analysis_model="vision", analyze=True)
+                count = len(self.calls)
+                with self.assertRaisesRegex(EasyAPIError, phase + r".*300") as caught:
+                    await self.service.run(self.value | options)
+                self.assertEqual(caught.exception.status, 504)
+                self.assertEqual(caught.exception.tuning_phase, phase)
+                self.assertEqual(caught.exception.timeout_seconds, 300)
+                self.assertEqual(caught.exception.code, "tuning_timeout")
+                with self.assertRaisesRegex(ValueError, "Tune again"):
+                    await self.service.run(self.value | options)
+                self.assertEqual(len(self.calls), count + 1)
+        self.assertEqual(self.service.latest(self.value["scope_id"])["prompt"], good["prompt"])
+
+    async def test_transport_timeout_default_and_keyword_override_preserve_explicit_stream(self):
+        client = type("Client", (), {"request": AsyncMock(side_effect=TimeoutError())})()
+        budgets = []
+        async def wait_for(awaitable, timeout):
+            budgets.append(timeout)
+            return await awaitable
+        body = {"model": "text", "messages": [], "stream": True}
+        with patch("easyapi_comfy.prompt_tools.asyncio.wait_for", side_effect=wait_for):
+            with self.assertRaisesRegex(EasyAPIError, r"tuning.*300"):
+                await run_wan_request(client, body, "en")
+            with self.assertRaisesRegex(EasyAPIError, r"analysis.*2"):
+                await run_wan_request(client, body, "en", timeout_seconds=2, phase="analysis")
+        self.assertEqual(budgets, [300, 2])
+        self.assertTrue(all(call.kwargs["stream"] is True and call.kwargs["body"]["stream"] is True
+                            for call in client.request.call_args_list))
 
     async def test_separate_target_and_llm_profiles_and_public_result(self):
         source = self.local_image()
@@ -204,7 +272,7 @@ class VideoTuningTests(unittest.IsolatedAsyncioTestCase):
         self.response = "truncated {"
         with self.assertRaisesRegex(ValueError, "structured"):
             await self.service.run(self.value | {"nonce": 1})
-        with self.assertRaisesRegex(ValueError, "increase nonce"):
+        with self.assertRaisesRegex(ValueError, "Tune again"):
             await self.service.run(self.value | {"nonce": 1})
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(self.service.latest(self.value["scope_id"])["prompt"], good["prompt"])
@@ -214,7 +282,7 @@ class VideoTuningTests(unittest.IsolatedAsyncioTestCase):
             await self.service.run(self.value | {"nonce": 2})
         reloaded = VideoTuningService(self.runtime)
         self.addAsyncCleanup(reloaded.close)
-        with self.assertRaisesRegex(ValueError, "increase nonce"):
+        with self.assertRaisesRegex(ValueError, "Tune again"):
             await reloaded.run(self.value | {"nonce": 2})
         self.assertEqual(len(self.calls), 3)
 
@@ -239,7 +307,7 @@ class VideoTuningTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await pending
         await asyncio.sleep(.01)
-        with self.assertRaisesRegex(ValueError, "increase nonce"):
+        with self.assertRaisesRegex(ValueError, "Tune again"):
             await self.service.run(self.value)
         self.assertEqual(len(self.calls), 1)
 

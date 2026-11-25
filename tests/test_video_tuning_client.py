@@ -7,6 +7,30 @@ from pathlib import Path
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is needed")
 class VideoTuningClientTests(unittest.TestCase):
+    def test_poll_transport_failure_is_resumable_and_model_timeout_keeps_its_phase(self):
+        script = r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {createVideoTuningClient}=await import(pathToFileURL(process.argv[1]));
+let posts=0,mode='offline';
+const transport=createVideoTuningClient({bootstrap:async()=> 'nonce',request:async(path,options)=>{
+ if(options.method==='POST'){posts++;return {run_id:'same-run',state:'queued'};}
+ if(mode==='offline')throw Object.assign(new Error('temporary read failure'),{status:503});
+ if(mode==='missing')throw Object.assign(new Error('not found'),{status:404});
+ if(mode==='timeout')return {state:'failed',error:'Analysis timed out after 300 seconds',error_phase:'analysis',error_code:'tuning_timeout',timeout_seconds:300,events:[],cursor:1};
+ return {state:'completed',result:{prompt:'complete result'},events:[],cursor:1};
+}});
+await assert.rejects(transport.run({prompt:'read'}),error=>error.pending===true&&error.runId==='same-run');
+mode='complete';assert.equal((await transport.resume('same-run')).prompt,'complete result');
+assert.equal(posts,1,'a read failure resumes the existing job without another POST');
+mode='timeout';await assert.rejects(transport.resume('same-run'),error=>error.phase==='analysis'&&error.code==='tuning_timeout'&&error.timeoutSeconds===300&&!error.pending);
+mode='missing';await assert.rejects(transport.resume('same-run'),error=>!error.pending);
+'''
+        result = subprocess.run([shutil.which("node"), "--input-type=module", "-e", script,
+                                 str(Path(__file__).parents[1] / "web/video-tuning-client.js")],
+                                capture_output=True, encoding="utf-8", timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_upload_keeps_native_multipart_content_type_and_private_management_header(self):
         script = r'''
 import assert from 'node:assert/strict';

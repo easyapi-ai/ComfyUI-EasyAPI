@@ -460,6 +460,29 @@
 .ea-wan-content > * {flex-shrink:0}
 .ea-wan-footer {flex:none;border-top:1px solid var(--ea-line);padding-top:9px}
 .ea-wan-popover .ea-prompt-popover-heading {flex:none;cursor:move;touch-action:none;user-select:none}
+.ea-tuning-progress {flex:none;display:flex;flex-direction:column;gap:7px;min-width:0;padding:9px 10px;border:1px solid var(--ea-line);border-radius:6px;background:var(--ea-input)}
+.ea-tuning-progress-heading {display:flex;align-items:baseline;gap:10px;min-width:0}
+.ea-tuning-phase-status {flex:1;min-width:0;font-weight:600;overflow-wrap:anywhere}
+.ea-tuning-phase-clock {flex:none;color:var(--ea-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.ea-tuning-phases {display:flex;flex-wrap:wrap;gap:5px;list-style:none;margin:0;padding:0}
+.ea-tuning-phases:empty {display:none}
+.ea-tuning-phase {display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:3px 7px;border:1px solid var(--ea-line);border-radius:99px;color:var(--ea-muted);font-size:11px;overflow-wrap:anywhere}
+.ea-tuning-phase::before {content:"";flex:none;width:9px;height:9px;border:1px solid currentColor;border-radius:50%}
+.ea-tuning-phase[data-state=running] {color:var(--ea-accent);border-color:var(--ea-accent)}
+.ea-tuning-phase[data-state=running]::before {border-width:2px;border-right-color:transparent;animation:ea-tuning-wait 1s linear infinite}
+.ea-tuning-phase[data-state=completed]::before {content:"✓";display:grid;place-items:center;border:0}
+.ea-tuning-phase[data-state=failed],.ea-tuning-progress[data-state=failed] .ea-tuning-phase-status {color:#eaa195}
+.ea-tuning-phase[data-state=failed]::before {content:"!";display:grid;place-items:center;border:0;font-weight:700}
+.ea-tuning-phase[data-state=paused],.ea-tuning-progress[data-state=pending] .ea-tuning-phase-status {color:#dec58c}
+.ea-tuning-phase[data-state=cancelled]::before {content:"×";display:grid;place-items:center;border:0}
+.ea-tuning-phase-error {margin:0;font-size:11px;line-height:1.5;color:var(--ea-muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.ea-tuning-analysis {min-width:0;border-top:1px solid var(--ea-line);padding-top:6px}
+.ea-tuning-analysis > summary {cursor:pointer;font-size:11px;color:var(--ea-fg)}
+.ea-tuning-analysis-groups {display:flex;flex-direction:column;gap:7px;max-height:min(160px,25vh);overflow:auto;overscroll-behavior:contain;margin-top:6px;padding-inline-end:4px}
+.ea-tuning-analysis-groups h5 {font:inherit;font-size:11px;font-weight:600;margin:0 0 3px}
+.ea-tuning-analysis-groups ul {margin:0;padding-inline-start:17px;font-size:11px;white-space:normal;overflow-wrap:anywhere}
+@keyframes ea-tuning-wait {to {transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce) {.ea-tuning-phase[data-state=running]::before {animation:none}}
 .ea-tuner-node {max-height:100%;overflow:auto;cursor:default}
 .ea-tuner-content {display:flex;flex-direction:column;gap:12px;min-width:0;padding:8px}
 .ea-tuner-section {display:flex;flex-direction:column;gap:8px;min-width:0;border-bottom:1px solid var(--ea-line);padding-bottom:10px}

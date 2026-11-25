@@ -740,7 +740,8 @@ export class PromptEditor {
         getContext: () => ({ ...this.getContext(), prompt: this.current.text, locale: this.getLocale() }),
         preferences: this.wanPreferences,
         scopeId: this.tuningScopeId?.(),
-        tune: this.videoTuning?.run, resumeTuning: this.videoTuning?.resume, uploadMedia: this.videoTuning?.upload,
+        tune: this.videoTuning?.run, resumeTuning: this.videoTuning?.resume,
+        cancelTuning: this.videoTuning?.cancel, uploadMedia: this.videoTuning?.upload,
         ...this.videoPanelOptions,
         onPreferences: next => { this.wanPreferences = next; },
         onApply: prompt => {

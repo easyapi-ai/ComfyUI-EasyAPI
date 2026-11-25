@@ -6,10 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from aiohttp import web
+from aiohttp import ClientTimeout, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from easyapi_comfy.runtime import Runtime
+from easyapi_comfy.client import EasyAPIError
 from easyapi_comfy.server import build_routes
 from easyapi_comfy.tuning_jobs import get_tuning_jobs
 
@@ -24,6 +25,9 @@ class VideoTuningRouteTests(unittest.IsolatedAsyncioTestCase):
         self.release = asyncio.Event()
         self.cancelled = asyncio.Event()
         self.events = 3
+        self.phase_events = []
+        self.slow_poll_release = None
+        self.slow_poll_started = asyncio.Event()
         self.failure = None
         self.calls = []
         self.secret = "private-fixture-key"
@@ -32,12 +36,14 @@ class VideoTuningRouteTests(unittest.IsolatedAsyncioTestCase):
         async def run(value, locale="zh-CN", emit=None):
             self.calls.append((value, locale))
             try:
+                for event in self.phase_events:
+                    await emit(event)
                 for index in range(self.events):
                     await emit({"phase": "tuning", "type": "delta", "text": str(index), "api_key": self.secret})
                 self.started.set()
                 await self.release.wait()
                 if self.failure:
-                    raise RuntimeError(self.failure)
+                    raise self.failure if isinstance(self.failure, Exception) else RuntimeError(self.failure)
                 return {"prompt": "A clean video prompt", "analysis": "Known facts", "authorization": self.secret,
                         "debug": "Filtered " + self.secret}
             except asyncio.CancelledError:
@@ -50,7 +56,14 @@ class VideoTuningRouteTests(unittest.IsolatedAsyncioTestCase):
         self.browser, self.headers = await self.browser_for_runtime()
 
     async def browser_for_runtime(self):
-        app = web.Application()
+        @web.middleware
+        async def delayed_poll(request, handler):
+            if self.slow_poll_release is not None and request.method == "GET" and request.headers.get("X-Fixture-Slow-Poll"):
+                self.slow_poll_started.set()
+                await self.slow_poll_release.wait()
+            return await handler(request)
+
+        app = web.Application(middlewares=[delayed_poll])
         app.add_routes(build_routes(self.runtime))
         browser = await self.enterAsyncContext(TestClient(TestServer(app)))
         session = await (await browser.get("/easyapi/bootstrap")).json()
@@ -149,6 +162,61 @@ class VideoTuningRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed["state"], "failed")
         self.assertIn("Fixture failure", failed["error"])
         self.assertNotIn(self.secret, failed["error"])
+
+    async def test_slow_nonstream_work_survives_a_poll_connection_timeout(self):
+        self.events = 0
+        phase = {"type": "phase", "phase": "analysis", "state": "running", "timeout_seconds": 300}
+        self.phase_events = [phase]
+        run_id = await self.create()
+        await self.started.wait()
+        running = await self.read(run_id)
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(running["phase"], "analysis")
+        self.assertEqual(running["events"], [phase | {"sequence": 1}])
+        self.slow_poll_release = asyncio.Event()
+        with self.assertRaises(asyncio.TimeoutError):
+            await self.browser.get(f"/easyapi/video-tuning/{run_id}", headers=self.headers | {"X-Fixture-Slow-Poll": "1"},
+                                   timeout=ClientTimeout(total=.03))
+        self.assertTrue(self.slow_poll_started.is_set())
+        self.slow_poll_release.set()
+        self.assertFalse(self.cancelled.is_set(), "A failed poll must not cancel the independently running tuning task")
+        self.assertEqual((await self.read(run_id))["state"], "running")
+        self.release.set()
+        await get_tuning_jobs(self.runtime).jobs[run_id].task
+        completed = await self.read(run_id)
+        self.assertEqual(completed["state"], "completed")
+        self.assertNotIn("error", completed)
+        self.assertEqual(completed["result"]["prompt"], "A clean video prompt")
+
+    async def test_timeout_details_preserve_phase_code_and_successful_prior_result(self):
+        previous_id = await self.create()
+        await self.started.wait()
+        self.release.set()
+        await get_tuning_jobs(self.runtime).jobs[previous_id].task
+        previous = await self.read(previous_id)
+        self.assertEqual(previous["state"], "completed")
+        for phase in ("analysis", "tuning"):
+            with self.subTest(phase=phase):
+                self.started.clear(); self.release.clear(); self.events = 0
+                self.phase_events = [{"type": "phase", "phase": phase, "state": "running", "timeout_seconds": 300}]
+                error = EasyAPIError("Fixture stage timed out: " + self.secret, status=504)
+                error.tuning_phase = phase
+                error.timeout_seconds = 300
+                error.code = error.tuning_code = "tuning_timeout"
+                self.failure = error
+                run_id = await self.create(value={"scope_id": "scope-" + phase, "nonce": 2})
+                await self.started.wait()
+                self.release.set()
+                await get_tuning_jobs(self.runtime).jobs[run_id].task
+                failed = await self.read(run_id)
+                self.assertEqual(failed["state"], "failed")
+                self.assertEqual(failed["error_phase"], phase)
+                self.assertEqual(failed["error_code"], "tuning_timeout")
+                self.assertEqual(failed["timeout_seconds"], 300)
+                self.assertNotIn(self.secret, str(failed))
+                self.assertNotIn("result", failed)
+                self.assertEqual((await self.read(previous_id))["result"], previous["result"],
+                                 "A failed new job must not overwrite an already completed result")
 
 
 if __name__ == "__main__":

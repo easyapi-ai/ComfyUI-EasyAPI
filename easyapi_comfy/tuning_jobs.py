@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 import re
 import time
 import uuid
@@ -49,6 +50,10 @@ class TuningJob:
     state: str = "queued"
     result: dict | None = None
     error: str | None = None
+    phase: str | None = None
+    error_phase: str | None = None
+    error_code: str | None = None
+    timeout_seconds: float | None = None
     sequence: int = 0
     updated_at: float = field(default_factory=time.monotonic)
     events: deque = field(default_factory=lambda: deque(maxlen=_MAX_EVENTS))
@@ -100,6 +105,9 @@ class TuningJobs:
             result["result"] = copy.deepcopy(job.result)
         if job.error is not None:
             result["error"] = job.error
+        for name in ("phase", "error_phase", "error_code", "timeout_seconds"):
+            if (value := getattr(job, name)) is not None:
+                result[name] = value
         return result
 
     async def _run(self, job, value, locale):
@@ -108,6 +116,8 @@ class TuningJobs:
                 return
             job.sequence += 1
             clean = public_tuning_value(self.runtime, event)
+            if isinstance(clean.get("phase"), str):
+                job.phase = clean["phase"][:80]
             # Poll responses stay bounded even when a model streams long deltas.
             if isinstance(clean.get("text"), str):
                 clean["text"] = clean["text"][:32768]
@@ -126,6 +136,15 @@ class TuningJobs:
             raise
         except Exception as error:
             job.error = str(public_tuning_value(self.runtime, str(error)))[:2000]
+            phase = getattr(error, "tuning_phase", None)
+            job.error_phase = str(public_tuning_value(self.runtime, phase))[:80] if isinstance(phase, str) else job.phase
+            timeout = getattr(error, "timeout_seconds", None)
+            if not isinstance(timeout, bool) and isinstance(timeout, (int, float)) and math.isfinite(timeout) and timeout > 0:
+                job.timeout_seconds = timeout
+            code = getattr(error, "tuning_code", None) or getattr(error, "code", None)
+            if not isinstance(code, str) or not code:
+                code = "tuning_timeout" if job.timeout_seconds is not None or getattr(error, "status", None) == 504 else "tuning_failed"
+            job.error_code = str(public_tuning_value(self.runtime, code))[:80]
             job.state = "failed"
         finally:
             job.updated_at = time.monotonic()

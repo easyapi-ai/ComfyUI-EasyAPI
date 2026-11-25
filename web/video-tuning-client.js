@@ -16,13 +16,23 @@ export function createVideoTuningClient({ request, bootstrap, pollMs = 300 }) {
       if (signal?.aborted) { abort(); throw signal.reason; }
       for (;;) {
         signal?.throwIfAborted();
-        const state = await call("/easyapi/video-tuning/" + encodeURIComponent(id) + "?after=" + cursor, { signal });
+        let state;
+        try {
+          state = await call("/easyapi/video-tuning/" + encodeURIComponent(id) + "?after=" + cursor, { signal });
+        } catch (error) {
+          if (!signal?.aborted && ![400, 401, 403, 404].includes(error.status)) {
+            error.pending = true; error.runId = id;
+          }
+          throw error;
+        }
         signal?.throwIfAborted();
         for (const event of state.events || []) onEvent?.(event);
         cursor = state.cursor ?? cursor;
         if (["completed", "success", "succeeded"].includes(state.state)) return state.result;
         if (["failed", "error", "cancelled", "canceled"].includes(state.state)) {
-          throw new Error(typeof state.error === "string" ? state.error : state.error?.message || "Video tuning did not complete");
+          const error = new Error(typeof state.error === "string" ? state.error : state.error?.message || "Video tuning did not complete");
+          error.phase = state.error_phase; error.code = state.error_code; error.timeoutSeconds = state.timeout_seconds;
+          throw error;
         }
         await new Promise((resolve, reject) => {
           const stopped = () => { clearTimeout(timer); signal.removeEventListener("abort", stopped); reject(signal.reason); };

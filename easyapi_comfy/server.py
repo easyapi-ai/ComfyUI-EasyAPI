@@ -427,8 +427,9 @@ def build_routes(runtime=None):
         locale = normalize_locale(value.get("locale") if isinstance(value, dict) else None)
         if isinstance(value, dict) and value.get("action") in {"wan_analyze", "wan_tune"}:
             client, body = await prepare_wan_request(rt, value, locale)
+            phase = "analysis" if value["action"] == "wan_analyze" else "tuning"
             if not body["stream"]:
-                result = await run_wan_request(client, body, locale)
+                result = await run_wan_request(client, body, locale, phase=phase)
                 return web.json_response(result, headers={"Cache-Control": "no-store"})
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-store",
                                                    "X-Accel-Buffering": "no"})
@@ -439,7 +440,7 @@ def build_routes(runtime=None):
                                       json.dumps(data, ensure_ascii=False) + "\n\n").encode("utf-8"))
             try:
                 await emit("stage", {"stage": value["action"]})
-                pending = asyncio.create_task(run_wan_request(client, body, locale, emit=emit))
+                pending = asyncio.create_task(run_wan_request(client, body, locale, emit=emit, phase=phase))
                 try:
                     while not pending.done():
                         if request.transport is None or request.transport.is_closing():
