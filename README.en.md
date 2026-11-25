@@ -81,6 +81,8 @@ The toolbar at the bottom right of the prompt field provides undo, redo, history
 
 Tuning uses the current model parameters and available media and can analyze a selected time range in a generated clip. Media from an upstream node stays pending until that node has produced it. Text and media analysis models come from the selected connection, and calls are billed at the chosen model's normal rate. You can preview results before applying them to the prompt. Parameter suggestions appear separately. Old results remain available for viewing and copying when the prompt, media or generation context changes; applying a result requires a matching context.
 
+The optional **BadCase problem description** stays visible. Filling it in during quick optimization or full analysis automatically enables diagnosis with observed symptoms, possible causes, minimal changes, retest advice and a complete patched prompt. Clearing it restores the selected task. You can optionally specify a time range or provide a result video; a text description alone is enough to diagnose.
+
 Media analysis and structured tuning use non-streaming requests. The interface shows preparation, analysis, tuning and validation stages with elapsed waiting time, then displays the complete validated result without partial JSON. Each model stage has a default 300-second timeout with a stage-specific error. Hiding the panel keeps the task running. Drafts and task viewing can be restored after refresh, and interrupted polling resumes the existing task instead of submitting it again.
 
 ## Video and media

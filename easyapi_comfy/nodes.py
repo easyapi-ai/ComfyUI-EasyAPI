@@ -1051,14 +1051,15 @@ class EasyAPIVideoPromptTuner(io.ComfyNode):
             raise ValueError("Tuning revision must be a nonnegative integer.")
         if not isinstance(issue, str):
             raise ValueError("Diagnostic issue must be text.")
-        start, end = float(issue_start), float(issue_end)
-        if not math.isfinite(start) or not math.isfinite(end):
-            raise ValueError("Diagnostic time range must be finite.")
         diagnosis = {"description": issue.strip()} if issue.strip() else None
-        if start != -1 or end != -1:
-            if start < 0 or end <= start:
-                raise ValueError("Provide both diagnostic times with 0 <= start < end, or leave both unset.")
-            diagnosis = {"description": issue.strip(), "start": start, "end": end}
+        if output == "diagnose" or diagnosis:
+            start, end = float(issue_start), float(issue_end)
+            if not math.isfinite(start) or not math.isfinite(end):
+                raise ValueError("Diagnostic time range must be finite.")
+            if start != -1 or end != -1:
+                if start < 0 or end <= start:
+                    raise ValueError("Provide both diagnostic times with 0 <= start < end, or leave both unset.")
+                diagnosis = {"description": issue.strip(), "start": start, "end": end}
         runtime = get_runtime()
         _interrupt()
         sources = await media.encode_inputs(image=image, video=video, audio=audio, references=references)

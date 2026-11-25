@@ -24,7 +24,7 @@ from .profiles import atomic_json
 from .prompt_tools import prompt_models, run_wan_request
 from .video import select_video_scenario
 
-RULES_VERSION = "video-tuning/1.0.0"
+RULES_VERSION = "video-tuning/1.0.1"
 TUNING_TIMEOUT_SECONDS = 300
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_TOTAL_BYTES = 24 * 1024 * 1024
@@ -88,6 +88,10 @@ def _object(value):
     if not isinstance(parsed, dict):
         raise ValueError("The tuning result must be an object")
     return parsed
+
+
+def _diagnostic(context):
+    return context["output"] == "diagnose" or bool((context.get("issue") or {}).get("description", "").strip())
 
 
 def _public(value):
@@ -399,15 +403,19 @@ class VideoTuningService:
             raise ValueError("Target parameters must be a JSON object")
         params = json.loads(_json(params))
         issue = copy.deepcopy(value.get("issue"))
+        if isinstance(issue, str):
+            issue = {"description": issue}
         if output == "diagnose":
-            if isinstance(issue, str):
-                issue = {"description": issue}
             if not isinstance(issue, dict):
                 raise ValueError("Describe the diagnostic issue")
-            _text(issue.get("description"), "Diagnostic issue", 12000, True)
         if issue is not None:
             if not isinstance(issue, dict):
                 raise ValueError("Invalid diagnostic issue")
+            issue["description"] = _text(issue.get("description"), "Diagnostic issue", 12000,
+                                         output == "diagnose").strip()
+            if output != "diagnose" and not issue["description"]:
+                issue = None
+        if issue is not None:
             start, end = issue.get("start"), issue.get("end")
             if start is not None or end is not None:
                 if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or start < 0 or end <= start:
@@ -500,7 +508,7 @@ class VideoTuningService:
         sections = self.knowledge["sections"]
         rules = list(sections.get("common", [])) + list(sections.get("domains", {}).get(context["domain"], []))
         rules += list(sections.get("modes", {}).get(context["mode"], [])) if context["mode"] != "reference" else []
-        if context["output"] == "diagnose":
+        if _diagnostic(context):
             rules += sections.get("diagnosis", [])
         if any(item["kind"] == "audio" for item in context["media"]):
             rules += sections.get("audio", [])
@@ -521,7 +529,7 @@ class VideoTuningService:
             instructions += ["Keep analysis brief and focus on the smallest useful prompt improvement."]
         else:
             instructions += ["Explain the important changes, constraints, risks and assumptions in analysis."]
-        if context["output"] == "diagnose":
+        if _diagnostic(context):
             instructions += ["Also include diagnosis with observations, causes, patches and retest, all nonempty string arrays."]
         supplied = {**context, "sourceAnalysis": source, "rulesVersion": self.rules_version}
         return [{"role": "system", "content": "\n".join(instructions + rules)}, {"role": "user", "content": _json(supplied)}]
@@ -535,7 +543,7 @@ class VideoTuningService:
         if not isinstance(suggested, dict):
             raise ValueError("Parameter suggestions must be an object")
         result["suggestedParams"] = copy.deepcopy(suggested)
-        if data.get("diagnosis") is not None or prepared["context"]["output"] == "diagnose":
+        if data.get("diagnosis") is not None or _diagnostic(prepared["context"]):
             diagnosis = data.get("diagnosis")
             if not isinstance(diagnosis, dict):
                 raise ValueError("Diagnostic output must include observations, causes, patches and a retest")

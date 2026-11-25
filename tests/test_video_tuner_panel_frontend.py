@@ -32,10 +32,10 @@ const success={prompt:'The person slowly turns one page.',analysis:'One visible 
 let resolveRun,runSignal,starts=0,resumes=0;
 const transport={run:async(value,signal,event,started)=>{starts++;runSignal=signal;started('test-run');return new Promise(resolve=>{resolveRun=resolve;});},
  resume:async()=>{resumes++;return success;}};
-const make=()=>new PromptEditor({value:context.prompt,t:key=>key,onInput:prompt=>{context.prompt=prompt;},
+const make=(extra={})=>new PromptEditor({value:context.prompt,t:key=>key,onInput:prompt=>{context.prompt=prompt;},
  getContext:()=>context,loadModels:async()=>[{id:'chat',supports_image:true}],transform:async()=>{throw new Error('legacy transport should not run');},
  getLocale:()=> 'en',tuningScopeId:()=> 'generic-test-node',videoTuning:transport,
- loadWanPanel:async()=>({WanTunerPanel:VideoTunerPanel})});
+ loadWanPanel:async()=>({WanTunerPanel:VideoTunerPanel}),...extra});
 let editor=make();document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
 '''
         script = "\n".join(scripts) + "\n(async()=>{\n" + setup + body + r'''
@@ -106,6 +106,77 @@ resolveRun(success);await running;
 editor=make();document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
 check(resumes===1&&starts===1,'a rebuilt view resumes instead of submitting another paid request');
 check(editor.wanPanel.completed.prompt===success.prompt,'resumed result is visible');
+''')
+
+    def test_optional_badcase_is_visible_and_diagnoses_in_quick_and_full_modes(self):
+        self.run_browser(r'''
+const panel=editor.wanPanel;
+const fill=(control,value)=>{control.value=value;control.dispatchEvent(new Event('input',{bubbles:true}));};
+const params=JSON.stringify(context.params);
+for (const output of ['quick','full']) {
+ panel.videoUrl.value='';
+ fill(panel.output,output);
+ check(panel.issue.checkVisibility(),'BadCase description must stay visible before choosing diagnosis');
+ check(!panel.start.checkVisibility(),'optional diagnostic time range starts hidden');
+ fill(panel.issue,'  The logo changes at 3 seconds.  ');
+ check(panel.start.checkVisibility(),'entering a description reveals diagnostic evidence controls');
+ check(panel.output.value===output,'diagnosis must preserve the selected output style');
+ let value=panel.requestValue();
+ check(value.output===output&&value.issue.description==='The logo changes at 3 seconds.','description is submitted in quick and full modes');
+ check(value.resultMedia.length===0,'text-only diagnosis requires no video');
+ context.resultMedia=[{kind:'video',role:'result_video',url:'https://fixture.invalid/result.mp4'}];
+ panel.videoUrl.value='https://fixture.invalid/result.mp4';
+ value=panel.requestValue();
+ check(value.resultMedia.length===1,'the matching diagnostic video is included once');
+ check(value.media.length===0,'result video never becomes a generation reference');
+ fill(panel.issue,'   ');
+ check(!panel.start.checkVisibility(),'clearing the description hides diagnostic evidence');
+ value=panel.requestValue();
+ check(value.issue===undefined&&value.resultMedia.length===0,'clearing the description restores ordinary tuning');
+ context.resultMedia=[];
+}
+check(JSON.stringify(context.params)===params,'diagnosis does not rewrite target video parameters');
+fill(panel.issue,'The logo changes at 3 seconds.');
+fill(panel.start,'3');fill(panel.end,'4');
+editor.dispose();editor=make();document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
+const restored=editor.wanPanel;
+check(restored.issue.value==='The logo changes at 3 seconds.'&&restored.start.value==='3'&&restored.end.value==='4','BadCase and its range restore from the draft');
+check(restored.output.value==='full'&&restored.start.checkVisibility(),'restored description automatically enables diagnostic controls');
+check(starts===0,'typing and draft recovery never start model calls');
+''')
+
+    def test_node_context_initializes_badcase_in_details(self):
+        self.run_browser(r'''
+editor.dispose();localStorage.clear();
+context.issue={description:'The logo changes.',start:3,end:4};
+editor=make();document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
+const panel=editor.wanPanel;
+check(panel.issue.value==='The logo changes.'&&panel.start.value==='3'&&panel.end.value==='4','node BadCase and range must appear on first opening details');
+check(panel.start.checkVisibility(),'initial BadCase activates diagnostic evidence controls');
+check(panel.requestValue().issue.description===context.issue.description,'details preserve the node issue');
+''')
+
+    def test_current_node_badcase_overrides_old_drafts_and_syncs_in_reused_details(self):
+        self.run_browser(r'''
+editor.dispose();
+check(readTuningDraft('generic-test-node').form.issue==='','test starts with an older empty BadCase draft');
+context.issue={description:'New node issue.',start:2,end:3};
+const submitted=[];
+editor=make({videoPanelOptions:{externalRun:async settings=>{submitted.push(settings);}}});
+document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
+const panel=editor.wanPanel;
+check(panel.issue.value==='New node issue.'&&panel.start.value==='2','current node issue overrides an empty saved draft');
+panel.issue.value='Unsubmitted detail edit.';panel.issue.dispatchEvent(new Event('input',{bubbles:true}));
+panel.checkContext();
+check(panel.issue.value==='Unsubmitted detail edit.','unchanged node context preserves local detail edits');
+editor.closeButton.click();context.issue={description:'Updated on the node.',start:4,end:5};
+editor.open('wan');await tick();
+check(editor.wanPanel===panel&&panel.issue.value==='Updated on the node.'&&panel.start.value==='4'&&panel.end.value==='5','reused details follow changed node BadCase');
+await panel.execute();
+check(submitted.at(-1).issue==='Updated on the node.','running details never writes an old issue back to the node');
+context.issue=null;panel.checkContext();
+check(panel.issue.value===''&&panel.start.value===''&&panel.end.value==='','clearing the node problem also clears old diagnostic times in details');
+check(panel.issueDetails.hidden,'cleared node problem restores ordinary tuning');
 ''')
 
     def test_uploaded_diagnostic_video_uses_a_server_asset_instead_of_a_blob_url(self):

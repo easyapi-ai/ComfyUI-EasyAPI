@@ -106,10 +106,28 @@ class VideoTuningNodeTests(unittest.IsolatedAsyncioTestCase):
                       {"issue_start": 0, "issue_end": -1}, {"issue_start": 2, "issue_end": 1},
                       {"issue_start": float("nan")}, {"issue": {"text": "invalid"}}):
             with self.subTest(value=value), patch.object(self.nodes, "_video_tuning_service") as service:
-                kwargs = {"scope_id": "scope", "prompt": "Scene", "text_model": "chat"} | value
+                kwargs = {"scope_id": "scope", "prompt": "Scene", "text_model": "chat", "issue": "Geometry bends"} | value
                 with self.assertRaises(ValueError):
                     await self.nodes.EasyAPIVideoPromptTuner.execute(**kwargs)
                 service.assert_not_called()
+
+    async def test_clearing_badcase_ignores_hidden_diagnostic_range(self):
+        result = {"prompt": "Keep the scene", "analysis": "One clear action."}
+        service = types.SimpleNamespace(run=AsyncMock(return_value=result))
+        runtime = types.SimpleNamespace(_clients={}, _retired_clients=[])
+        with patch.object(self.nodes, "get_runtime", return_value=runtime), patch.object(self.nodes, "_interrupt"), \
+                patch.object(self.nodes, "_video_tuning_service", return_value=service), \
+                patch.object(self.nodes.media, "encode_inputs", new=AsyncMock(return_value=[])):
+            for output in ("quick", "full"):
+                for description in ("", "  \n "):
+                    for start, end in ((2, -1), (2, 1)):
+                        with self.subTest(output=output, description=description, start=start, end=end):
+                            await self.nodes.EasyAPIVideoPromptTuner.execute(
+                                scope_id="scope", prompt="Scene", text_model="chat", output=output,
+                                issue=description, issue_start=start, issue_end=end)
+                            value = service.run.call_args.args[0]
+                            self.assertIsNone(value["issue"])
+                            self.assertEqual(value["output"], output)
 
     async def test_comfy_interrupt_cancels_its_tuning_waiter(self):
         started, cancelled = asyncio.Event(), asyncio.Event()

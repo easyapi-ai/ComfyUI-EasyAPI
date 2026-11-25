@@ -128,14 +128,16 @@ export class VideoTunerNodePanel {
     this.output = this.select("output", OUTPUTS, option => this.text("wanOutput_" + option, option));
     this.analyze = element("input", { type: "checkbox" }); this.controls.analyze = this.analyze;
     this.analyze.addEventListener("change", () => this.write("analyze", this.analyze.checked));
-    this.issue = element("textarea", { rows: 2 }); this.controls.issue = this.issue;
-    this.issue.addEventListener("input", () => this.write("issue", this.issue.value));
+    this.issue = element("textarea", { rows: 2, placeholder: this.text("wanIssuePlaceholder", "Describe what went wrong, for example, the logo changes at 3 seconds.") }); this.controls.issue = this.issue;
+    this.issue.addEventListener("input", () => { this.write("issue", this.issue.value); this.updateIssue(); });
     const range = ["issue_start", "issue_end"].map(name => {
       const input = element("input", { type: "number", min: "0", step: "0.1" }); this.controls[name] = input;
       input.addEventListener("change", () => this.write(name, input.value === "" ? -1 : Number(input.value)));
       return this.field(name === "issue_start" ? "wanStart" : "wanEnd", name === "issue_start" ? "Start (seconds)" : "End (seconds)", input);
     });
-    this.issueFields = element("div", { className: "ea-tuner-issue", hidden: true }, this.field("wanIssue", "What went wrong?", this.issue), this.grid(...range));
+    this.issueRange = this.grid(...range);
+    this.issueFields = element("div", { className: "ea-tuner-issue" },
+      this.field("wanIssue", "BadCase problem description (optional; enables diagnosis)", this.issue), this.issueRange);
     this.runButton = this.action("tunerRunOnly", "Tune this node", () => this.queue(false), true);
     this.retryButton = this.action("tunerRerun", "Tune again", () => this.queue(true));
     this.copyButton = this.action("wanCopyPrompt", "Copy prompt", () => this.copyPrompt()); this.copyButton.disabled = true;
@@ -219,6 +221,11 @@ export class VideoTunerNodePanel {
   resize() { this.node.setDirtyCanvas?.(true, true); this.node.graph?.setDirtyCanvas?.(true, true); }
   minHeight() { return Math.max(420, Math.min(1250, this.root.scrollHeight || 740)); }
   syncRunButtons() { this.runButton.disabled = this.retryButton.disabled = Boolean(this.queued || this.disposed); }
+  updateIssue() {
+    this.issueRange.hidden = value(this.node, "output", "quick") !== "diagnose" &&
+      !linked(this.node, "issue") && !String(value(this.node, "issue")).trim();
+    this.resize();
+  }
   sync() {
     if (this.disposed) return;
     for (const [name, control] of Object.entries(this.controls)) {
@@ -231,7 +238,7 @@ export class VideoTunerNodePanel {
     this.prompt.hidden = linked(this.node, "prompt");
     this.paramsEditor.disabled = linked(this.node, "target_params_json");
     if (document.activeElement !== this.paramsEditor) this.paramsEditor.value = String(value(this.node, "target_params_json", "{}"));
-    this.issueFields.hidden = value(this.node, "output", "quick") !== "diagnose";
+    this.updateIssue();
     for (const [name, picker] of [["text_model", this.textPicker], ["analysis_model", this.analysisPicker], ["target_model", this.targetPicker]]) {
       picker.input.value = linked(this.node, name) ? "" : String(value(this.node, name)); picker.input.disabled = linked(this.node, name);
     }
@@ -354,9 +361,16 @@ export class VideoTunerNodePanel {
       id: "linked-" + input.name, kind: input.name === "diagnostic_video" ? "video" : input.name === "references" ? "group" : input.name,
       role: input.name === "diagnostic_video" ? "result_video" : "reference_" + input.name, ready: false, analysisOnly: input.name === "diagnostic_video", name: input.name,
     }));
+    const description = local("issue").trim();
+    const issueRangeLinked = linked(this.node, "issue_start") || linked(this.node, "issue_end");
+    const start = Number(value(this.node, "issue_start", -1)), end = Number(value(this.node, "issue_end", -1));
+    const issue = description ? { description, ...(!issueRangeLinked ? {
+      ...(start >= 0 ? { start } : {}), ...(end >= 0 ? { end } : {}),
+    } : {}) } : null;
     return { profileId, targetProfileId: profileId, targetModel: modelId, modelId, prompt: local("prompt"), promptLinked: linked(this.node, "prompt"),
       params, paramsLinked: linked(this.node, "target_params_json"), profiles: this.profiles, operation: "video-generation", scopeId: value(this.node, "scope_id"),
-      domain: local("domain"), mode: local("mode"), output: local("output"), locale: this.locale(), media, resultMedia: [],
+      domain: local("domain"), mode: local("mode"), output: local("output"), issue, issueLinked: linked(this.node, "issue"), issueRangeLinked,
+      locale: this.locale(), media, resultMedia: [],
       tuningProfileId: local("profile_id"), textModel: local("text_model"), analysisModel: local("analysis_model") };
   }
   formSnapshot() { return Object.fromEntries(FIELDS.filter(name => !["scope_id", "revision"].includes(name)).map(name => [name, linked(this.node, name) ? null : value(this.node, name)])); }
@@ -433,6 +447,7 @@ export class VideoTunerNodePanel {
     this.textPicker.input.setAttribute("aria-label", this.text("promptTransformModel", "Text model"));
     this.analysisPicker.input.setAttribute("aria-label", this.text("wanAnalysisModel", "Media analysis model"));
     this.targetPicker.input.setAttribute("aria-label", this.text("tunerTargetModel", "Video model"));
+    this.issue.placeholder = this.text("wanIssuePlaceholder", "Describe what went wrong, for example, the logo changes at 3 seconds.");
     this.sync();
   }
   dispose() {

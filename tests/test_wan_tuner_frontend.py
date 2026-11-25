@@ -154,14 +154,48 @@ const make=async transform=>{
   assert.equal(panel.apply.disabled,true);
  } finally { panel.dispose(); }
 }
-{
+for (const output of ['quick','full','diagnose']) {
  const {panel}=await make();
  try {
-  panel.output.value='diagnose';panel.issue.value='Step warps';
+  panel.output.value=output;panel.issue.value='Step warps';
   await panel.execute();
   assert.equal(panel.completed,null);
   assert.equal(panel.apply.disabled,true);
   assert.ok(panel.status.textContent);
+ } finally { panel.dispose(); }
+}
+for (const output of ['quick','full']) {
+ const diagnosis={observations:['Logo changes at 3 seconds'],causes:['Camera and object motion compete'],
+  patches:['Keep the product facing the camera'],retest:['Keep the seed fixed']};
+ const {panel,context,calls}=await make(payload=>({text:JSON.stringify(payload.action==='wan_analyze'?source:{...result,diagnosis})}));
+ try {
+  panel.output.value=output;panel.output.fire('change');
+  assert.notEqual(panel.issueFields.hidden,true,'BadCase description is visible for every task');
+  assert.equal(panel.issueDetails.hidden,true,'optional diagnostic evidence starts hidden');
+  panel.issue.value='  Logo changes at 3 seconds  ';panel.issue.fire('input');
+  assert.equal(panel.output.value,output,'typing does not overwrite the selected output style');
+  assert.equal(panel.issueDetails.hidden,false);
+  const before=JSON.stringify(context);
+  await panel.execute();
+  const supplied=JSON.parse(calls.at(-1).payload.messages[1].content);
+  assert.equal(supplied.output,output);
+  assert.equal(supplied.issue.description,'Logo changes at 3 seconds');
+  assert.equal(JSON.parse(calls[0].payload.messages[1].content[0].text.split('\n').slice(1).join('\n')).issue.description,supplied.issue.description);
+  assert.deepEqual(panel.completed.diagnosis,diagnosis);
+  assert.equal(panel.apply.disabled,false);
+  assert.equal(JSON.stringify(context),before,'diagnosis leaves the source prompt and video parameters intact');
+  panel.issue.value='  ';panel.issue.fire('input');
+  assert.equal(panel.issueDetails.hidden,true);
+  assert.equal(panel.apply.disabled,true,'editing the problem invalidates a prior diagnosis');
+  assert.equal(panel.buildContext().issue,undefined,'clearing BadCase restores normal tuning');
+  panel.issue.value='Logo changes';panel.issue.fire('input');panel.start.value='3';
+  assert.throws(()=>panel.buildContext(),/wanInvalidRange/);
+  panel.end.value='4';
+  assert.deepEqual(panel.buildContext().issue,{description:'Logo changes',start:3,end:4});
+  panel.issue.value='';panel.issue.fire('input');panel.end.value='2';
+  assert.doesNotThrow(()=>panel.buildContext(),'inactive diagnostic range does not block normal tuning');
+  panel.output.value='diagnose';panel.output.fire('change');panel.start.value=panel.end.value='';
+  assert.throws(()=>panel.buildContext(),/wanIssueRequired/,'manual diagnostic task still requires a description');
  } finally { panel.dispose(); }
 }
 {

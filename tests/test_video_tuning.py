@@ -203,6 +203,58 @@ class VideoTuningTests(unittest.IsolatedAsyncioTestCase):
         with Image.open(io.BytesIO(base64.b64decode(inline.split(",", 1)[1]))) as decoded:
             self.assertEqual(decoded.format, "JPEG")
 
+    async def test_badcase_automatically_diagnoses_without_changing_output_style(self):
+        for output in ("quick", "full"):
+            with self.subTest(output=output):
+                value = self.value | {"scope_id": output, "output": output, "target_model": "wan3.0-video",
+                                      "issue": {"description": "  The product logo changes between shots.  "}}
+                result = await self.service.run(value)
+                system = self.calls[-1][1]["messages"][0]["content"]
+                supplied = json.loads(self.calls[-1][1]["messages"][1]["content"])
+                self.assertEqual(supplied["output"], output)
+                self.assertEqual(supplied["issue"]["description"], "The product logo changes between shots.")
+                self.assertIn("diagnosis with observations, causes, patches and retest", system)
+                self.assertIn("edge lines", system)
+                self.assertIn("Keep analysis brief" if output == "quick" else "Explain the important changes", system)
+                self.assertEqual(result["diagnosis"], self.response["diagnosis"])
+                self.assertEqual(result["suggestedParams"], self.response["suggestedParams"])
+                self.assertEqual(result["context"]["params"], self.value["params"])
+                self.assertTrue((await self.service.run(value))["cache_hit"])
+        self.assertEqual(len(self.calls), 2, "Opening a cached BadCase must not submit another paid request")
+
+    async def test_automatic_badcase_requires_all_diagnostic_sections(self):
+        for output in ("quick", "full"):
+            for omitted in ("diagnosis", "observations", "causes", "patches", "retest"):
+                with self.subTest(output=output, omitted=omitted):
+                    self.response = complete()
+                    if omitted == "diagnosis":
+                        del self.response["diagnosis"]
+                    else:
+                        self.response["diagnosis"][omitted] = ["   "]
+                    with self.assertRaisesRegex(ValueError, "Diagnostic output"):
+                        await self.service.run(self.value | {"scope_id": output + omitted, "output": output,
+                                                            "issue": {"description": "Logo changes"}})
+
+    async def test_blank_badcase_returns_to_normal_tuning_and_invalid_description_is_preflight(self):
+        del self.response["diagnosis"]
+        for output in ("quick", "full"):
+            with self.subTest(output=output):
+                value = self.value | {"scope_id": output, "output": output, "issue": {"description": " \n "}}
+                result = await self.service.run(value)
+                self.assertNotIn("diagnosis", result)
+                self.assertNotIn("Also include diagnosis", self.calls[-1][1]["messages"][0]["content"])
+                self.assertIsNone(result["context"]["issue"])
+                for range_value in ({"start": 2}, {"start": 2, "end": 1}):
+                    cleared = await self.service.run(value | {"issue": {"description": " \n "} | range_value})
+                    self.assertIsNone(cleared["context"]["issue"])
+                    self.assertTrue(cleared["cache_hit"], "Hidden diagnostic times must not change ordinary tuning")
+        count = len(self.calls)
+        for issue in ({}, {"description": 12}, {"description": "x" * 12001}):
+            with self.subTest(issue_type=type(issue.get("description"))):
+                with self.assertRaisesRegex(ValueError, "Diagnostic issue"):
+                    await self.service.run(self.value | {"issue": issue})
+        self.assertEqual(len(self.calls), count)
+
     async def test_wan_reference_rules_and_generic_does_not_invent_tokens(self):
         source = self.local_image()
         self.response = complete("Preserve @图片1 while the actor reads.")

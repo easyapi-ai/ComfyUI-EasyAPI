@@ -21,15 +21,16 @@ import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const {queueVideoTunerNode,ensureTunerScope}=await import(pathToFileURL(process.argv[1]));
 const get=(node,key)=>node.widgets.find(item=>item.name===key);
-const node={id:7,type:'EasyAPIVideoPromptTuner',widgets:[{name:'scope_id',value:'scope-a'},{name:'revision',value:0},{name:'prompt',value:'NEVER USE THIS LINKED DEFAULT'}],inputs:[{name:'prompt',link:4}]};
+const node={id:7,type:'EasyAPIVideoPromptTuner',widgets:[{name:'scope_id',value:'scope-a'},{name:'revision',value:0},{name:'prompt',value:'NEVER USE THIS LINKED DEFAULT'},{name:'issue',value:'NEVER USE THIS LINKED ISSUE DEFAULT'}],inputs:[{name:'prompt',link:4},{name:'issue',link:5}]};
 const downstream={id:8,type:'EasyAPIVideo',widgets:[{name:'seed',value:123,callback(){throw new Error('Downstream seed callback ran');}}]};
 node.graph={_nodes:[node,downstream]};
 let appQueueCalls=0,beforeQueuedCalls=0,queued=[];
 const graph={workflow:{nodes:[{id:7,type:node.type},{id:8,type:downstream.type}],links:[[4,10,0,7,0,'STRING']]},output:{
- '7':{class_type:node.type,inputs:{prompt:['10',0],references:['11',0],scope_id:'scope-a',revision:0}},
+ '7':{class_type:node.type,inputs:{prompt:['10',0],issue:['13',0],output:'quick',references:['11',0],scope_id:'scope-a',revision:0}},
  '10':{class_type:'TextSource',inputs:{text:'Actual upstream prompt'}},
  '11':{class_type:'EasyAPIMedia',inputs:{image:['12',0]}},
  '12':{class_type:'LoadImage',inputs:{image:'local-fixture.png'}},
+ '13':{class_type:'TextSource',inputs:{text:'The logo changes at 3 seconds.'}},
  '8':{class_type:'EasyAPIVideo',inputs:{prompt:['7',0],seed:123}},
  '9':{class_type:'SaveVideo',inputs:{video:['8',0]}},
 }};
@@ -41,8 +42,10 @@ assert.equal(appQueueCalls,0);assert.equal(beforeQueuedCalls,0);
 assert.equal(JSON.stringify(graph),pristine,'The serializer result and workflow must remain untouched');
 assert.equal(get(downstream,'seed').value,123);
 const [number,request,options]=queued[0];assert.equal(number,0);
-assert.deepEqual(Object.keys(request.output).sort(),['10','11','12','7','__easyapi_tune_preview_preview-one'].sort());
+assert.deepEqual(Object.keys(request.output).sort(),['10','11','12','13','7','__easyapi_tune_preview_preview-one'].sort());
 assert.deepEqual(request.output['7'].inputs.prompt,['10',0],'Connected raw prompt must remain a Comfy link');
+assert.deepEqual(request.output['7'].inputs.issue,['13',0],'The server resolves a connected BadCase description');
+assert.equal(request.output['7'].inputs.output,'quick','The description enables diagnosis without rewriting the output preference');
 assert.equal(request.output['8'],undefined);assert.equal(request.output['9'],undefined);
 assert.deepEqual(options.partialExecutionTargets,['__easyapi_tune_preview_preview-one']);
 assert.deepEqual(request.output[options.partialExecutionTargets[0]].inputs,{json_value:['7',2]});
@@ -96,6 +99,34 @@ assert.equal(panel.getContext().prompt,'');assert.equal(panel.getContext().promp
 assert.equal(panel.getContext().profileId,'p2');assert.equal(panel.getContext().tuningProfileId,'p1');
 assert.equal(panel.getContext().media[0].ready,false);
 assert.equal(get(node,'analysis_model').value,'text-model','A visual text model is the default analysis model');
+assert.equal(panel.issueFields.hidden,false,'BadCase description is available without selecting diagnostic output');
+assert.equal(panel.issueRange.hidden,true,'Optional time range is hidden until diagnosis is requested');
+for (const output of ['quick','full']) {
+ panel.output.value=output;panel.output.fire('change');
+ panel.issue.value='  The logo changes at 3 seconds.  ';panel.issue.fire('input');
+ assert.equal(get(node,'output').value,output,'Automatic diagnosis preserves the selected output preference');
+ assert.equal(get(node,'issue').value,panel.issue.value);
+ assert.equal(panel.issueFields.hidden,false);assert.equal(panel.issueRange.hidden,false);
+ assert.deepEqual(panel.getContext().issue,{description:'The logo changes at 3 seconds.'});
+ panel.controls.issue_start.value='2';panel.controls.issue_start.fire('change');
+ panel.controls.issue_end.value='4';panel.controls.issue_end.fire('change');
+ assert.deepEqual(panel.getContext().issue,{description:'The logo changes at 3 seconds.',start:2,end:4});
+ panel.issue.value='  ';panel.issue.fire('input');
+ assert.equal(panel.issueRange.hidden,true,'Clearing the description returns to the selected ordinary task');
+ assert.equal(panel.getContext().issue,null);
+ assert.equal(get(node,'output').value,output);
+ panel.setFormState({issue_start:-1,issue_end:-1});
+}
+panel.output.value='diagnose';panel.output.fire('change');assert.equal(panel.issueRange.hidden,false);
+panel.output.value='quick';panel.output.fire('change');
+panel.setFormState({issue:'Node BadCase',issue_start:2,issue_end:4});
+node.inputs.push({name:'issue',link:21},{name:'issue_start',link:22});panel.sync();
+assert.equal(panel.issue.disabled,true);assert.equal(panel.getContext().issue,null);
+assert.equal(panel.getContext().issueLinked,true);assert.equal(panel.getContext().issueRangeLinked,true);
+assert.equal(panel.issueRange.hidden,false,'Linked diagnostic input can still use optional local time bounds');
+node.inputs=node.inputs.filter(input=>!['issue','issue_start'].includes(input.name));
+panel.setFormState({issue:'',issue_start:-1,issue_end:-1});
+assert.equal(panel.getContext().issueLinked,false);assert.equal(panel.getContext().issueRangeLinked,false);
 panel.setFormState({prompt:'must not replace linked input',domain:'ecommerce'});
 assert.equal(get(node,'prompt').value,fields.prompt);assert.equal(get(node,'domain').value,'ecommerce');
 assert.equal(panel.getFormState().prompt,null);

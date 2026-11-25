@@ -174,9 +174,12 @@ export class WanTunerPanel {
     this.model = element("select", { disabled: true });
     this.analysisModel = element("select", { disabled: true });
     this.analyze = element("input", { type: "checkbox", checked: true });
-    this.issue = element("textarea", { rows: 2, placeholder: t("wanIssuePlaceholder") });
-    this.start = element("input", { type: "number", min: 0, step: "0.1", placeholder: t("wanStart") });
-    this.end = element("input", { type: "number", min: 0, step: "0.1", placeholder: t("wanEnd") });
+    this.issue = element("textarea", { rows: 2, placeholder: t("wanIssuePlaceholder"),
+      value: preferences.issue ?? getContext().issue?.description ?? "" });
+    this.start = element("input", { type: "number", min: 0, step: "0.1", placeholder: t("wanStart"),
+      value: preferences.start ?? getContext().issue?.start ?? "" });
+    this.end = element("input", { type: "number", min: 0, step: "0.1", placeholder: t("wanEnd"),
+      value: preferences.end ?? getContext().issue?.end ?? "" });
     this.videoUrl = element("input", { type: "url", placeholder: t("wanVideoUrl") });
     this.mediaList = element("ul", { className: "ea-wan-media" });
     this.status = element("p", { className: "ea-prompt-status", role: "status" });
@@ -200,9 +203,10 @@ export class WanTunerPanel {
     const attachment = element("input", { type: "file", accept: "image/*,video/*", multiple: true });
     attachment.addEventListener("change", () => this.addFiles(attachment.files));
     this.contextParams = element("pre", { className: "ea-wan-context", textContent: this.contextSummary() });
-    this.issueFields = element("div", { className: "ea-wan-issue" }, field(t("wanIssue"), this.issue),
+    this.issueDetails = element("div", { className: "ea-wan-issue" },
       element("div", { className: "ea-wan-time-range" }, field(t("wanStart"), this.start), field(t("wanEnd"), this.end)),
       field(t("wanResultVideo"), this.videoUrl));
+    this.issueFields = element("div", { className: "ea-wan-issue" }, field(t("wanIssue"), this.issue), this.issueDetails);
     const form = element("div", { className: "ea-prompt-form ea-wan-form" },
       field(t("wanDomain"), this.domain), field(t("wanMode"), this.mode), field(t("wanOutput"), this.output),
       field(t("connection"), this.profile), field(t("promptTransformModel"), this.model),
@@ -246,6 +250,7 @@ export class WanTunerPanel {
   }
 
   changed() {
+    this.updateIssue();
     this.invalidate();
     const preferences = { domain: this.domain.value, mode: this.mode.value, shape: this.shapeKey, output: this.output.value,
       profileId: this.profile.value, model: this.model.value, analysisModel: this.analysisModel.value };
@@ -254,7 +259,11 @@ export class WanTunerPanel {
   }
 
   updateIssue() {
-    this.issueFields.hidden = this.output.value !== "diagnose";
+    this.issueDetails.hidden = !this.isDiagnosis();
+  }
+
+  isDiagnosis() {
+    return this.output.value === "diagnose" || Boolean(this.issue.value.trim());
   }
 
   renderMedia() {
@@ -366,16 +375,17 @@ export class WanTunerPanel {
 
   buildContext() {
     const live = this.getContext();
+    const diagnostic = this.isDiagnosis();
     const start = this.start.value === "" ? undefined : Number(this.start.value);
     const end = this.end.value === "" ? undefined : Number(this.end.value);
-    if (this.output.value === "diagnose" && ((start !== undefined && (!Number.isFinite(start) || start < 0)) ||
+    if (diagnostic && ((start !== undefined && (!Number.isFinite(start) || start < 0)) ||
         (end !== undefined && (!Number.isFinite(end) || end <= (start ?? 0))) ||
         (start === undefined) !== (end === undefined))) throw new Error(this.t("wanInvalidRange"));
     if (this.output.value === "diagnose" && !this.issue.value.trim()) throw new Error(this.t("wanIssueRequired"));
     const media = [...(live.media || [])];
     return { domain: this.domain.value, mode: this.mode.value, output: this.output.value, prompt: live.prompt,
       targetModel: live.targetModel || live.modelId, params: live.params || {}, capabilities: live.capabilities, media,
-      issue: this.output.value === "diagnose" ? { description: this.issue.value.trim(), start, end } : undefined,
+      issue: diagnostic ? { description: this.issue.value.trim(), start, end } : undefined,
       locale: live.locale || "en" };
   }
 
@@ -383,7 +393,7 @@ export class WanTunerPanel {
     const labeled = normalizeTuningMedia(context.media);
     let media = [...context.media.map((item, index) => ({ ...item, label: labeled[index].label })), ...this.addedMedia];
     const videos = [];
-    if (this.output.value === "diagnose" && this.videoUrl.value.trim() && !media.some(item => item.url === this.videoUrl.value.trim()))
+    if ((context.output === "diagnose" || context.issue?.description) && this.videoUrl.value.trim() && !media.some(item => item.url === this.videoUrl.value.trim()))
       videos.push({ id: "result-video", name: this.t("wanResultVideo"), kind: "video", role: "result_video",
         analysisOnly: true, ready: true, url: this.videoUrl.value.trim() });
     media.push(...videos);
@@ -460,7 +470,7 @@ export class WanTunerPanel {
       if (sourceKey !== contextFingerprint(this.getContext()) || original !== this.getContext().prompt) {
         this.invalidate(); return;
       }
-      const completed = parseTuningResult(response.text, { requireDiagnosis: context.output === "diagnose", context });
+      const completed = parseTuningResult(response.text, { requireDiagnosis: context.output === "diagnose" || Boolean(context.issue?.description), context });
       this.completed = completed;
       this.resultKey = sourceKey;
       this.resultOriginal = original;

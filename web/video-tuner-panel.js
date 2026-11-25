@@ -8,6 +8,10 @@ function make(tag, properties = {}, ...children) {
 const PHASES = new Set(["preparing", "analysis", "tuning", "validation", "cache"]);
 const PHASE_LABELS = { preparing: "Preparing", analysis: "Analyzing media", tuning: "Tuning prompt", validation: "Validating result", cache: "Reusing result" };
 
+function nodeIssueForm(context) {
+  return { issue: context.issue?.description ?? "", start: context.issue?.start ?? "", end: context.issue?.end ?? "" };
+}
+
 export class VideoTunerPanel extends WanTunerPanel {
   constructor(options) {
     const scopeId = options.scopeId || options.getContext().scopeId;
@@ -18,9 +22,12 @@ export class VideoTunerPanel extends WanTunerPanel {
       analysisModel: saved.form.analysisModel ?? saved.form.analysis_model,
       start: saved.form.start ?? (saved.form.issue_start >= 0 ? saved.form.issue_start : ""),
       end: saved.form.end ?? (saved.form.issue_end >= 0 ? saved.form.issue_end : "") } : null;
+    // The node owns its current inputs; a previous preview must not overwrite them.
+    if (options.externalRun && form) Object.assign(form, nodeIssueForm(options.getContext()));
     super({ ...options, preferences: { ...options.preferences, ...form } });
     Object.assign(this, { tune: options.tune, resumeTuning: options.resumeTuning, cancelTuning: options.cancelTuning,
       uploadMedia: options.uploadMedia, externalRun: options.externalRun, scopeId, readOnlyApply: options.readOnlyApply === true });
+    this.nodeIssueKey = JSON.stringify(nodeIssueForm(this.getContext()));
     this.now = options.now || Date.now;
     this.phaseRecords = [];
     this.progressState = "idle";
@@ -108,6 +115,18 @@ export class VideoTunerPanel extends WanTunerPanel {
   }
 
   changed() { super.changed(); if (this.videoReady) this.saveDraft(); }
+  checkContext() {
+    if (this.externalRun) {
+      const form = nodeIssueForm(this.getContext());
+      const key = JSON.stringify(form);
+      if (key !== this.nodeIssueKey) {
+        this.nodeIssueKey = key;
+        this.restoreForm(form);
+        this.changed();
+      }
+    }
+    super.checkContext();
+  }
   renderMedia() { super.renderMedia(); if (this.videoReady) this.saveDraft(); }
   async refreshModels(...args) {
     await super.refreshModels(...args);
@@ -181,10 +200,11 @@ export class VideoTunerPanel extends WanTunerPanel {
   requestValue() {
     const context = this.buildContext();
     const live = this.getContext();
+    const diagnostic = context.output === "diagnose" || Boolean(context.issue?.description);
     const media = [...context.media, ...this.addedMedia.filter(item => item.kind === "image")];
-    const resultMedia = this.output.value === "diagnose" ?
+    const resultMedia = diagnostic ?
       [...(live.resultMedia || []), ...this.addedMedia.filter(item => item.kind === "video")] : [];
-    if (this.output.value === "diagnose" && this.videoUrl.value.trim() &&
+    if (diagnostic && this.videoUrl.value.trim() &&
       !resultMedia.some(item => (item.url || item.previewUrl) === this.videoUrl.value.trim())) {
       resultMedia.push({ kind: "video", role: "result_video", analysisOnly: true, ready: true, url: this.videoUrl.value.trim() });
     }
