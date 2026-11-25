@@ -473,9 +473,10 @@ export class PromptEditor {
     this.wanDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
     this.wanPosition = { left: rect.left, top: rect.top };
     this.popup.dataset.dragging = "true";
-    window.addEventListener("pointermove", this.onWanDragMove);
-    window.addEventListener("pointerup", this.onWanDragEnd);
-    window.addEventListener("pointercancel", this.onWanDragEnd);
+    // ComfyUI's DOM widget host stops bubbling pointer events, even for top-layer popovers.
+    window.addEventListener("pointermove", this.onWanDragMove, true);
+    window.addEventListener("pointerup", this.onWanDragEnd, true);
+    window.addEventListener("pointercancel", this.onWanDragEnd, true);
     try { this.popupHeading.setPointerCapture?.(event.pointerId); } catch { /* Window listeners also track the drag. */ }
   }
 
@@ -484,9 +485,9 @@ export class PromptEditor {
     if (!drag || (event && event.pointerId !== drag.pointerId)) return;
     this.wanDrag = null;
     delete this.popup.dataset.dragging;
-    window.removeEventListener("pointermove", this.onWanDragMove);
-    window.removeEventListener("pointerup", this.onWanDragEnd);
-    window.removeEventListener("pointercancel", this.onWanDragEnd);
+    window.removeEventListener("pointermove", this.onWanDragMove, true);
+    window.removeEventListener("pointerup", this.onWanDragEnd, true);
+    window.removeEventListener("pointercancel", this.onWanDragEnd, true);
     try { this.popupHeading.releasePointerCapture?.(drag.pointerId); } catch { /* Capture may already have ended. */ }
   }
 

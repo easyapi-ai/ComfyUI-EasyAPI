@@ -447,6 +447,7 @@
 .ea-prompt-popover :is(.ea-prompt-status,.ea-prompt-result) {white-space:pre-wrap;overflow-wrap:anywhere}
 .ea-prompt-popover .ea-prompt-status:empty {display:none}
 .ea-prompt-popover.ea-wan-popover {
+  cursor:default;
   width:min(720px, calc(100vw - 16px));
   height:auto;
   max-height:min(760px, calc(100vh - 16px));
