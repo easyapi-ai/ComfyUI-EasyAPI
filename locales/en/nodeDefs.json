@@ -1,4 +1,116 @@
 {
+  "EasyAPIVideoPromptTuner": {
+    "display_name": "EasyAPI Video Prompt Tuner",
+    "description": "Tune a video prompt using independently selected text and target video models. Partial runs resolve upstream inputs without running downstream generators.",
+    "inputs": {
+      "profile_id": {
+        "name": "Tuning connection",
+        "tooltip": "Connection for the text and media analysis models."
+      },
+      "text_model": {
+        "name": "Text model",
+        "tooltip": "Model used to optimize the prompt."
+      },
+      "analysis_model": {
+        "name": "Media analysis model",
+        "tooltip": "Optional vision model. An empty value uses text and parameter context without analyzing media."
+      },
+      "target_profile_id": {
+        "name": "Target video connection",
+        "tooltip": "Connection whose video model and capabilities guide tuning."
+      },
+      "target_model": {
+        "name": "Target video model"
+      },
+      "target_params_json": {
+        "name": "Target video parameters",
+        "tooltip": "JSON object preserving the intended duration, resolution and other video parameters. Suggestions never change these values automatically."
+      },
+      "prompt": {
+        "name": "Original prompt",
+        "tooltip": "Connect an upstream text output or enter the original prompt. Linked values resolve during execution."
+      },
+      "domain": {
+        "name": "Scenario",
+        "options": {
+          "general": "General",
+          "drama": "Drama / short film",
+          "ecommerce": "E-commerce"
+        }
+      },
+      "mode": {
+        "name": "Generation mode",
+        "options": {
+          "auto": "Auto",
+          "text-to-video": "Text to video",
+          "first-frame": "First frame",
+          "first-last-frame": "First and last frames",
+          "reference": "Multimodal references",
+          "v2v": "Video editing"
+        }
+      },
+      "output": {
+        "name": "Task",
+        "options": {
+          "quick": "Quick optimization",
+          "full": "Full analysis",
+          "diagnose": "Diagnose a failed clip"
+        }
+      },
+      "analyze": {
+        "name": "Analyze media first"
+      },
+      "issue": {
+        "name": "What went wrong?"
+      },
+      "issue_start": {
+        "name": "Issue start (seconds)",
+        "tooltip": "Use -1 for no selected time range."
+      },
+      "issue_end": {
+        "name": "Issue end (seconds)",
+        "tooltip": "Use -1 for no selected time range."
+      },
+      "locale": {
+        "name": "Output language"
+      },
+      "scope_id": {
+        "name": "Node cache scope",
+        "tooltip": "Stable internal identity. Copied nodes receive new scopes; no API key is stored here."
+      },
+      "revision": {
+        "name": "Tuning revision",
+        "tooltip": "Changed by Tune again to request fresh tuning."
+      },
+      "references": {
+        "name": "Reference group"
+      },
+      "image": {
+        "name": "Reference image"
+      },
+      "video": {
+        "name": "Reference video"
+      },
+      "audio": {
+        "name": "Reference audio"
+      },
+      "diagnostic_video": {
+        "name": "Clip to diagnose",
+        "tooltip": "Analysis evidence only; never added as a generation reference."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Optimized prompt"
+      },
+      "1": {
+        "name": "Analysis"
+      },
+      "2": {
+        "name": "Structured result"
+      }
+    }
+  },
   "EasyAPIChat": {
     "display_name": "EasyAPI Chat",
     "description": "Create text and multimodal responses using models available to the selected connection and operation.",

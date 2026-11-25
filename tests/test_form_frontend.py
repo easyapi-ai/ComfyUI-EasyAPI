@@ -237,7 +237,7 @@ const context = { document, app, api, window, Node: FakeNode, URL, URLSearchPara
   navigator: {}, location: { href: 'https://comfy.test/', protocol: 'https:' },
 };
 vm.createContext(context);
-for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'model-catalog.js', 'node-billing.js', 'easyapi.js']) {
+for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'model-catalog.js', 'node-billing.js', 'video-tuning-state.js', 'video-tuning-client.js', 'video-tuner-node.js', 'easyapi.js']) {
   const filename = path.join(process.argv[2], file);
   const original = fs.readFileSync(filename, 'utf8');
   const names = [...original.matchAll(/^export (?:const|function|class) (\w+)/gm)].map((match) => match[1]);

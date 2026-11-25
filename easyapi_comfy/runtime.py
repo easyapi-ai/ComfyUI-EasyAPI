@@ -48,6 +48,12 @@ class Runtime:
             self._retired_clients.append(client)
 
     async def close(self):
+        jobs = getattr(self, "_video_tuning_jobs", None)
+        if jobs is not None:
+            await jobs.close()
+        tuning = getattr(self, "_video_tuning_service", None)
+        if tuning is not None:
+            await tuning.close()
         for client in [*self._clients.values(), *self._retired_clients]:
             await client.close()
         self._clients.clear()

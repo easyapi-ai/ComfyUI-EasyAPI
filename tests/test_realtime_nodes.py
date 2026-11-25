@@ -25,7 +25,7 @@ def load_nodes():
     io = types.SimpleNamespace(ComfyNode=object, Custom=lambda _: ComfyType,
                                Schema=lambda **kwargs: types.SimpleNamespace(**kwargs),
                                NodeOutput=lambda *args, **kwargs: types.SimpleNamespace(args=args, **kwargs))
-    for name in ("String", "Int", "Boolean", "Combo", "Image", "Mask", "Audio", "Video"):
+    for name in ("String", "Int", "Float", "Boolean", "Combo", "Image", "Mask", "Audio", "Video"):
         setattr(io, name, ComfyType)
     latest = types.ModuleType("comfy_api.latest")
     latest.io = io
@@ -137,7 +137,7 @@ class RequestTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hidden_nodes_are_not_registered_and_video_uses_one_operation(self):
         registered = {cls.define_schema().node_id for cls in self.nodes.NODE_CLASSES}
-        self.assertEqual(len(registered), 13)
+        self.assertEqual(len(registered), 14)
         self.assertFalse(registered & {"EasyAPIModeration", "EasyAPISearch", "EasyAPIRerank",
                                        "EasyAPIEmbedding", "EasyAPINativeRequest",
                                        "EasyAPIMidjourney", "EasyAPISuno", "EasyAPITools"})

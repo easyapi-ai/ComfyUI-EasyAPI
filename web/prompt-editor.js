@@ -65,8 +65,10 @@ function snapshot(text, start = text.length, end = start) {
 
 export class PromptEditor {
   constructor({ value = "", t, onInput, getContext, loadModels, transform, resolveMedia, historyKey,
-                getLocale = () => "", loadWanPanel = () => import("./wan-tuner-panel.js") }) {
+                getLocale = () => "", loadWanPanel = () => import("./video-tuner-panel.js"),
+                videoTuning, tuningScopeId, videoPanelOptions = {} }) {
     Object.assign(this, { t, onInput, getContext, loadModels, transform, resolveMedia, historyKey, getLocale, loadWanPanel });
+    Object.assign(this, { videoTuning, tuningScopeId, videoPanelOptions });
     this.current = snapshot(String(value ?? ""));
     this.undoStack = [];
     this.redoStack = [];
@@ -168,6 +170,7 @@ export class PromptEditor {
     });
     this.dismissOutside = (event) => {
       if (this.toolbar.contains(event.target) || this.popup.contains(event.target)) return;
+      if (this.mode === "wan") return;
       this.toolsPinned = false;
       if (!this.root.contains(event.target)) this.close();
       this.syncOutsideListener();
@@ -249,7 +252,8 @@ export class PromptEditor {
     this.buttons.optimize.disabled = this.linked || !this.current.text.trim();
     this.buttons.translate.disabled = this.buttons.optimize.disabled;
     const context = this.getContext();
-    this.buttons.wan.hidden = !/(?:^|[\/_:-])wan3(?:[.\-_]|$)/i.test(context.targetModel || context.modelId || "");
+    this.buttons.wan.hidden = context.operation !== "video-generation" && context.family !== "video" &&
+      !/(?:^|[\/_:-])wan3(?:[.\-_]|$)/i.test(context.targetModel || context.modelId || "");
     this.buttons.wan.disabled = this.buttons.optimize.disabled;
     for (const tool of ["history", "tags", "translate", "optimize", "wan"]) {
       this.buttons[tool].setAttribute("aria-expanded", String(this.mode === tool));
@@ -419,6 +423,7 @@ export class PromptEditor {
     else if (mode === "wan") this.renderWan();
     else this.renderTransform(mode);
     this.popup.classList?.toggle("ea-wan-popover", mode === "wan");
+    if (this.nativePopover) this.popup.setAttribute("popover", mode === "wan" ? "manual" : "auto");
     this.popup.hidden = false;
     if (this.nativePopover) this.popup.showPopover();
     else document.body.append(this.popup);
@@ -500,8 +505,10 @@ export class PromptEditor {
     this.mode = null;
     this.modelRequest?.abort();
     this.transformRequest?.abort();
-    this.wanPanel?.dispose();
-    this.wanPanel = null;
+    if (!this.wanPanel?.persistent) {
+      this.wanPanel?.dispose();
+      this.wanPanel = null;
+    } else this.wanPanel.saveDraft?.();
     this.wanOpenToken = (this.wanOpenToken || 0) + 1;
     this.modelRequest = this.transformRequest = null;
     this.result = null;
@@ -720,6 +727,10 @@ export class PromptEditor {
 
   async renderWan() {
     const token = this.wanOpenToken = (this.wanOpenToken || 0) + 1;
+    if (this.wanPanel?.persistent) {
+      this.body.replaceChildren(this.wanPanel.root);
+      this.wanPanel.checkContext(); this.position(); return;
+    }
     this.body.replaceChildren(element("p", { className: "ea-prompt-status", textContent: this.t("wanPreparing") }));
     try {
       const { WanTunerPanel } = await this.loadWanPanel();
@@ -728,6 +739,9 @@ export class PromptEditor {
         t: this.t, loadModels: this.loadModels, transform: this.transform, resolveMedia: this.resolveMedia,
         getContext: () => ({ ...this.getContext(), prompt: this.current.text, locale: this.getLocale() }),
         preferences: this.wanPreferences,
+        scopeId: this.tuningScopeId?.(),
+        tune: this.videoTuning?.run, resumeTuning: this.videoTuning?.resume, uploadMedia: this.videoTuning?.upload,
+        ...this.videoPanelOptions,
         onPreferences: next => { this.wanPreferences = next; },
         onApply: prompt => {
           if (this.linked) return;
@@ -759,6 +773,7 @@ export class PromptEditor {
     this.finishTyping();
     this.toolsPinned = this.toolsHovered = false;
     this.close();
+    this.wanPanel?.dispose(); this.wanPanel = null;
     this.syncOutsideListener();
     this.setToolsExpanded(false);
   }

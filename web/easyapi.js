@@ -7,6 +7,8 @@ import { ProfileManager, EASYAPI_SIDEBAR_ID } from "./profile-panel.js";
 import { PresetPanel } from "./preset-panel.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { createModelCatalog } from "./model-catalog.js";
+import { createVideoTuningClient } from "./video-tuning-client.js";
+import { installVideoTunerNode } from "./video-tuner-node.js";
 import { estimateFacts, NodeBilling } from "./node-billing.js";
 
 const sheet = document.createElement("link");
@@ -86,6 +88,7 @@ async function jsonRequest(path, options = {}) {
   return response.json();
 }
 const modelCatalog = createModelCatalog(jsonRequest);
+const videoTuningClient = createVideoTuningClient({ request: jsonRequest, bootstrap });
 let nodeProfilesSnapshot;
 function nodeProfiles() {
   if (nodeProfilesSnapshot?.expires > Date.now()) return nodeProfilesSnapshot.request;
@@ -127,6 +130,75 @@ async function promptModels(profileId, signal, onUpdate, { profiles, refresh = f
     signal.addEventListener("abort", unsubscribe, { once: true });
   }
   return listOf(await modelCatalog.get({ ...scope, signal, refresh }), "models");
+}
+async function videoModels(profileId, signal, onUpdate, { profiles, refresh = false } = {}) {
+  profiles ||= listOf(await nodeProfiles(), "profiles");
+  signal?.throwIfAborted();
+  const profile = profiles.find((row) => (row.id || row.profile_id) === profileId);
+  if (!profile) throw new Error(t("profileUnavailable"));
+  const scope = { profileId, revision: profile.model_catalog_revision, family: "video",
+    operation: "video-generation", locale: localeQuery() };
+  if (onUpdate && signal) {
+    const unsubscribe = modelCatalog.subscribe(scope, state => onUpdate({ ...state,
+      models: state.value ? listOf(state.value, "models") : undefined }));
+    signal.addEventListener("abort", unsubscribe, { once: true });
+  }
+  return listOf(await modelCatalog.get({ ...scope, signal, refresh }), "models");
+}
+
+function videoTuningScope(node) {
+  node.properties ??= {};
+  let id = node.properties.easyapi_video_tuning_id;
+  const owner = (node.graph?._nodes || []).find(other => other.properties?.easyapi_video_tuning_id === id);
+  if (typeof id !== "string" || id.length < 10 || owner && owner !== node) {
+    id = globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    node.properties.easyapi_video_tuning_id = id;
+  }
+  return id;
+}
+
+function tunerNodeContext(node) {
+  const context = node.easyapiTunerPanel.getContext();
+  const media = nodePromptMedia(node, context.params || {});
+  for (const kind of ["image", "video", "audio"]) {
+    const input = node.inputs?.find(port => port.name === kind);
+    if (input?.link != null) media.push(...promptSourceMedia(promptInputNode(node, input), kind,
+      "reference_" + kind, "tuner-" + node.id + "-" + kind));
+  }
+  const diagnostic = node.inputs?.find(port => port.name === "diagnostic_video");
+  return { ...context, scopeId: String(value(node, "scope_id")), nonce: Number(value(node, "revision", 0)), media,
+    resultMedia: diagnostic?.link != null ? promptSourceMedia(promptInputNode(node, diagnostic), "video", "result_video", "tuner-diagnosis-" + node.id) : [],
+    operation: "video-generation" };
+}
+
+function showTunerDetails({ node, result }) {
+  const panel = node.easyapiTunerPanel;
+  if (!node.easyapiTuningEditor) {
+    const form = panel.getFormState();
+    const editor = node.easyapiTuningEditor = new PromptEditor({
+      value: tunerNodeContext(node).prompt, t, getLocale: hostLocale, onInput() {},
+      getContext: () => tunerNodeContext(node), loadModels: promptModels,
+      transform: transformPrompt, resolveMedia: resolvePromptMedia, videoTuning: videoTuningClient,
+      tuningScopeId: () => String(value(node, "scope_id")),
+      videoPanelOptions: { readOnlyApply: true, initialResult: result,
+        preferences: { profileId: form.profile_id, model: form.text_model, analysisModel: form.analysis_model,
+          domain: form.domain, mode: form.mode, output: form.output },
+        externalRun: async (settings, retry) => {
+          panel.setFormState({ profile_id: settings.profileId, text_model: settings.model,
+            analysis_model: settings.analysisModel, domain: settings.domain, mode: settings.mode,
+            output: settings.output, analyze: settings.analyze, issue: settings.issue,
+            issue_start: settings.start === "" ? -1 : Number(settings.start),
+            issue_end: settings.end === "" ? -1 : Number(settings.end) });
+          return panel.run(retry);
+        } },
+    });
+    editor.root.style.display = "contents";
+    editor.textarea.hidden = editor.promptLabel.hidden = editor.toolbar.hidden = true;
+    panel.root.append(editor.root);
+  }
+  const editor = node.easyapiTuningEditor;
+  editor.buttons.wan.disabled = false; editor.open("wan");
+  if (result && editor.wanPanel?.setResult) editor.wanPanel.setResult(result, { stale: false });
 }
 async function transformPrompt(payload, signal, onEvent) {
   const management = await bootstrap();
@@ -318,6 +390,7 @@ function getProfileManager() {
     onChanged: async (profileId) => {
       nodeProfilesSnapshot = undefined;
       if (profileId) modelCatalog.invalidate(profileId);
+      window.dispatchEvent(new Event("easyapi:profiles"));
       const updates = [...panels].map(async (panel) => {
         if (profileId && String(value(panel.node, "profile_id")) === profileId) panel.realtime?.disconnect();
         await panel.refreshProfiles();
@@ -621,6 +694,7 @@ class NodePanel {
       },
       getContext: () => this.promptContext(),
       loadModels: promptModels, transform: transformPrompt, resolveMedia: resolvePromptMedia,
+      videoTuning: videoTuningClient, tuningScopeId: () => videoTuningScope(this.node),
       historyKey: (create) => this.promptHistoryKey(create),
     });
     this.promptHint = el("div", { class: "ea-caption", hidden: true }, t("linkedInput"));
@@ -1308,6 +1382,18 @@ app.registerExtension({
     return options;
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
+    if (nodeData.name === "EasyAPIVideoPromptTuner") {
+      installVideoTunerNode(nodeType, { app, api, t, loadProfiles: nodeProfiles,
+        loadPromptModels: promptModels, loadVideoModels: videoModels,
+        modelPicker: onSelect => new ModelPicker(onSelect),
+        loadTargetSchema: ({ profileId, modelId, locale }, signal) => jsonRequest("/easyapi/schema?" +
+          new URLSearchParams({ profile_id: profileId, model: modelId, operation: "video-generation", locale: locale || localeQuery() }), { signal }),
+        openDetails: showTunerDetails,
+        onResult: ({ node, result }) => node.easyapiTuningEditor?.wanPanel?.setResult(result, { stale: false }),
+        onDispose: ({ node }) => { node.easyapiTuningEditor?.dispose(); node.easyapiTuningEditor?.root.remove(); },
+      });
+      return;
+    }
     if (PRESET_NODES.has(nodeData.name)) {
       const specification = nodeData.input?.required?.operation || nodeData.input?.optional?.operation;
       const ids = Array.isArray(specification?.[0]) ? specification[0] : specification?.[1]?.options || [];

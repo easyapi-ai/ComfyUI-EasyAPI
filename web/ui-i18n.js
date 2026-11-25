@@ -307,6 +307,57 @@ Object.assign(zhTW, {
   "sizeError.min_ratio": "寬 ÷ 高不能小於 {min_ratio}。", "sizeError.max_ratio": "寬 ÷ 高不能大於 {max_ratio}。",
   "param.output_format": "圖片格式", "param.output_compression": "輸出壓縮率", "param.compression": "壓縮率", "param.background": "背景",
 });
+Object.assign(en, {
+  promptWanTune: "Video prompt tuning", videoDomainGeneral: "General", wanDomain_general: "General", wanMode_auto: "Detect from references",
+  videoRetune: "Tune again", videoQueued: "Tuner queued. Results will appear in this node.",
+  videoUploadingMedia: "Uploading analysis media…", videoNodeMediaNote: "Connect image, video, references or diagnostic_video inputs on the canvas. The node resolves them during execution.",
+  videoPartialDraft: "Incomplete draft", videoCopyPartial: "Copy incomplete draft",
+  videoResultStale: "Saved result belongs to an earlier context. You can copy it, or tune the current inputs.",
+  videoCacheHit: "Reused the successful tuning result.", videoDraftSaveFailed: "The local draft could not be saved. Copy the result before refreshing.",
+  tunerConnectionTitle: "Tuning models", tunerConnection: "Tuning connection", tunerTargetTitle: "Target video context",
+  tunerTargetConnection: "Video connection", tunerTargetModel: "Video model", tunerTargetParams: "Video parameters JSON",
+  tunerCopyTarget: "Copy selected video settings", tunerLinkedPrompt: "The upstream node supplies this prompt when executed.",
+  tunerRunOnly: "Run tuner", tunerRerun: "Tune again", tunerDetails: "Open details",
+  tunerUpstreamNotice: "Runs this tuner and its required upstream nodes. Upstream generators may incur charges; downstream video generation does not run.",
+  tunerExecutionFailed: "Tuning did not complete.", tunerInputsChanged: "Inputs changed. The saved result is available for copying.",
+  tunerSelectVideo: "Select an EasyAPI video node to copy its settings.", tunerLinkedTarget: "Linked target values are resolved during execution; they were not copied as widget defaults.",
+  tunerRestored: "Restored the saved preview. Execution validates the server cache.", tunerReady: "Tuning finished. The prompt output is ready.",
+  tunerQueued: "Tuner queued. Required upstream nodes will run if needed.",
+});
+Object.assign(zh, {
+  promptWanTune: "视频提示词调优", videoDomainGeneral: "通用", wanDomain_general: "通用", wanMode_auto: "按素材自动识别",
+  videoRetune: "重新调优", videoQueued: "调优节点已排队，结果完成后会显示在节点中。",
+  videoUploadingMedia: "正在上传分析素材…", videoNodeMediaNote: "节点模式请通过画布的图片、视频、素材组或诊断视频输入连接素材，运行时解析实际上游内容。",
+  videoPartialDraft: "未完成草稿", videoCopyPartial: "复制未完成草稿",
+  videoResultStale: "这是此前上下文的结果，仍可复制；请针对当前输入重新调优。",
+  videoCacheHit: "已复用此前成功的调优结果。", videoDraftSaveFailed: "本地草稿保存失败，请在刷新前复制结果备份。",
+  tunerConnectionTitle: "调优模型", tunerConnection: "调优连接", tunerTargetTitle: "目标视频上下文",
+  tunerTargetConnection: "视频连接", tunerTargetModel: "目标视频模型", tunerTargetParams: "目标视频参数 JSON",
+  tunerCopyTarget: "复制选中视频节点配置", tunerLinkedPrompt: "运行时使用上游节点提供的提示词。",
+  tunerRunOnly: "单独调优", tunerRerun: "重新调优", tunerDetails: "展开完整调优",
+  tunerUpstreamNotice: "运行调优节点及所需上游。上游生成节点可能产生调用费用，不执行下游视频生成。",
+  tunerExecutionFailed: "调优未完成。", tunerInputsChanged: "输入已变化，已有结果仍可查看和复制。",
+  tunerSelectVideo: "请先选中一个 EasyAPI 视频节点，再复制其配置。", tunerLinkedTarget: "连线配置将在执行时解析，不会把控件默认值当成实际值。",
+  tunerRestored: "已恢复本地结果预览；执行时会校验服务端缓存。", tunerReady: "调优已完成，提示词输出可接视频节点。",
+  tunerQueued: "调优节点已排队，按需执行上游依赖。",
+});
+Object.assign(zhTW, {
+  promptWanTune: "影片提示詞調優", videoDomainGeneral: "通用", wanDomain_general: "通用", wanMode_auto: "依素材自動判斷",
+  videoRetune: "重新調優", videoQueued: "調優節點已排程，完成後會在節點中顯示結果。",
+  videoUploadingMedia: "正在上傳分析素材…", videoNodeMediaNote: "節點模式請在畫布連接圖片、影片、素材組或診斷影片輸入，執行時解析實際上游內容。",
+  videoPartialDraft: "未完成草稿", videoCopyPartial: "複製未完成草稿",
+  videoResultStale: "這是先前情境的結果，仍可複製；請針對目前輸入重新調優。",
+  videoCacheHit: "已重用先前成功的調優結果。", videoDraftSaveFailed: "本機草稿儲存失敗，重新整理前請複製結果備份。",
+  tunerConnectionTitle: "調優模型", tunerConnection: "調優連線", tunerTargetTitle: "目標影片情境",
+  tunerTargetConnection: "影片連線", tunerTargetModel: "目標影片模型", tunerTargetParams: "目標影片參數 JSON",
+  tunerCopyTarget: "複製選取影片節點設定", tunerLinkedPrompt: "執行時使用上游節點提供的提示詞。",
+  tunerRunOnly: "單獨調優", tunerRerun: "重新調優", tunerDetails: "展開完整調優",
+  tunerUpstreamNotice: "執行調優節點及必要上游。上游產生節點可能產生費用，不執行下游影片產生。",
+  tunerExecutionFailed: "調優未完成。", tunerInputsChanged: "輸入已變更，現有結果仍可查看及複製。",
+  tunerSelectVideo: "請先選取 EasyAPI 影片節點。", tunerLinkedTarget: "連線設定將在執行時解析，不以控制項預設值代替。",
+  tunerRestored: "已還原本機預覽；執行時會驗證伺服器快取。", tunerReady: "調優完成，提示詞輸出可連接影片節點。",
+  tunerQueued: "調優節點已排程，按需執行上游依賴。",
+});
 export function hostLocale() { return app.extensionManager?.setting?.get("Comfy.Locale") || "en"; }
 export function localeQuery() { return hostLocale(); }
 export function textKey(text) {

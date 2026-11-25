@@ -1,4 +1,116 @@
 {
+  "EasyAPIVideoPromptTuner": {
+    "display_name": "EasyAPI 影片提示詞調優",
+    "description": "獨立選擇調優文字模型和目標影片模型。單獨調優只解析所需上游，不執行下游影片生成。",
+    "inputs": {
+      "profile_id": {
+        "name": "調優連線",
+        "tooltip": "文字模型和素材分析模型使用的連線。"
+      },
+      "text_model": {
+        "name": "文字模型",
+        "tooltip": "用於優化提示詞的模型。"
+      },
+      "analysis_model": {
+        "name": "素材分析模型",
+        "tooltip": "可選視覺模型；留空時只使用文字和參數上下文，不分析素材。"
+      },
+      "target_profile_id": {
+        "name": "目標影片連線",
+        "tooltip": "讀取目標影片模型能力所用的連線。"
+      },
+      "target_model": {
+        "name": "目標影片模型"
+      },
+      "target_params_json": {
+        "name": "目標影片參數",
+        "tooltip": "JSON 物件，保留時長、解析度等目標設定；參數建議不會自動改寫這些值。"
+      },
+      "prompt": {
+        "name": "原始提示詞",
+        "tooltip": "連接上游文字輸出或填寫原文。連線值在節點執行時解析。"
+      },
+      "domain": {
+        "name": "場景",
+        "options": {
+          "general": "通用",
+          "drama": "劇集／短劇",
+          "ecommerce": "電商／帶貨"
+        }
+      },
+      "mode": {
+        "name": "生成形態",
+        "options": {
+          "auto": "自動",
+          "text-to-video": "文生影片",
+          "first-frame": "首幀圖生",
+          "first-last-frame": "首尾幀",
+          "reference": "多模態參考",
+          "v2v": "影片編輯"
+        }
+      },
+      "output": {
+        "name": "任務",
+        "options": {
+          "quick": "快速優化",
+          "full": "完整分析",
+          "diagnose": "失敗片段診斷"
+        }
+      },
+      "analyze": {
+        "name": "先分析素材"
+      },
+      "issue": {
+        "name": "出現了什麼問題？"
+      },
+      "issue_start": {
+        "name": "問題起始秒數",
+        "tooltip": "-1 表示不指定分析時間區間。"
+      },
+      "issue_end": {
+        "name": "問題結束秒數",
+        "tooltip": "-1 表示不指定分析時間區間。"
+      },
+      "locale": {
+        "name": "輸出語言"
+      },
+      "scope_id": {
+        "name": "節點快取識別碼",
+        "tooltip": "隱藏的穩定內部識別碼。複製節點會產生新識別碼；不包含 API Key。"
+      },
+      "revision": {
+        "name": "調優版本",
+        "tooltip": "點擊「重新調優」時更新，用於請求新的調優結果。"
+      },
+      "references": {
+        "name": "參考素材組"
+      },
+      "image": {
+        "name": "參考圖片"
+      },
+      "video": {
+        "name": "參考影片"
+      },
+      "audio": {
+        "name": "參考音訊"
+      },
+      "diagnostic_video": {
+        "name": "待診斷成片",
+        "tooltip": "僅作分析證據，不會加入生成參考素材。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "優化提示詞"
+      },
+      "1": {
+        "name": "分析"
+      },
+      "2": {
+        "name": "結構化結果"
+      }
+    }
+  },
   "EasyAPIChat": {
     "display_name": "EasyAPI 對話",
     "description": "使用目前連線及操作可用的模型產生文字或多模態回應。",

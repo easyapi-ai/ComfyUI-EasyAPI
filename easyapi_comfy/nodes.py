@@ -973,6 +973,114 @@ class EasyAPIRealtime(io.ComfyNode):
         return io.NodeOutput(record["text"], audio, record)
 
 
+def _video_tuning_service(runtime):
+    from .video_tuning import get_video_tuning
+    return get_video_tuning(runtime)
+
+
+async def _await_video_tuning(runtime, value, locale):
+    pending = asyncio.create_task(_video_tuning_service(runtime).run(value, locale=locale))
+    try:
+        while not pending.done():
+            _interrupt()
+            await asyncio.wait({pending}, timeout=.1)
+        _interrupt()
+        return pending.result()
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+class EasyAPIVideoPromptTuner(io.ComfyNode):
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        import hashlib
+        import time
+        from .video_tuning import RULES_VERSION
+
+        # ComfyUI's fast cache must still revisit the service after credential or
+        # capability changes. Its persistent content cache avoids another LLM call.
+        profiles = get_runtime().profiles
+        revisions = sorted((entry["id"], profiles.revision(entry["id"])) for entry in profiles.list_public())
+        signature = [RULES_VERSION, profiles.default_profile_id(), revisions, int(time.time() // 300)]
+        return hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="EasyAPIVideoPromptTuner", display_name="EasyAPI 视频提示词调优", category="EasyAPI/提示词",
+            inputs=[io.String.Input("profile_id", default=""),
+                    io.String.Input("text_model", default="", tooltip="用于调优的文本模型，与目标视频模型分别选择"),
+                    io.String.Input("analysis_model", default="", tooltip="可选素材分析模型"),
+                    io.String.Input("target_profile_id", default="", tooltip="目标模型连接；为空时使用调优连接"),
+                    io.String.Input("target_model", default="", tooltip="选择目标视频模型；根据其实际能力调优提示词"),
+                    io.String.Input("target_params_json", default="{}", multiline=True),
+                    io.String.Input("prompt", default="", multiline=True),
+                    io.Combo.Input("domain", options=["general", "drama", "ecommerce"], default="general"),
+                    io.Combo.Input("mode", options=["auto", "text-to-video", "first-frame", "first-last-frame", "reference", "v2v"], default="auto"),
+                    io.Combo.Input("output", options=["quick", "full", "diagnose"], default="quick"),
+                    io.Boolean.Input("analyze", default=True),
+                    io.String.Input("issue", default="", multiline=True),
+                    io.Float.Input("issue_start", default=-1, min=-1, step=.1),
+                    io.Float.Input("issue_end", default=-1, min=-1, step=.1),
+                    io.String.Input("locale", default="zh-CN"),
+                    io.String.Input("scope_id", default="", tooltip="持久节点范围 ID；界面自动生成，API 工作流应显式提供"),
+                    io.Int.Input("revision", default=0, min=0, tooltip="仅在明确重新调优时增加，重复执行复用同版本结果"),
+                    MEDIA.Input("references", optional=True), io.Image.Input("image", optional=True),
+                    io.Video.Input("video", optional=True), io.Audio.Input("audio", optional=True),
+                    io.Video.Input("diagnostic_video", optional=True)],
+            outputs=[io.String.Output(id="prompt", display_name="提示词"),
+                     io.String.Output(id="analysis", display_name="分析"), JSON.Output(id="result", display_name="完整结果")],
+            description="手动预览或工作流执行视频提示词调优；相同输入与版本复用已有结果，提示词可连接视频生成节点。",
+            has_intermediate_output=True,
+        )
+
+    @classmethod
+    @native_progress
+    async def execute(cls, profile_id="", text_model="", analysis_model="", target_profile_id="", target_model="",
+                      target_params_json="{}", prompt="", domain="general", mode="auto", output="quick", analyze=True,
+                      issue="", issue_start=-1, issue_end=-1, locale="zh-CN", scope_id="", revision=0,
+                      references=None, image=None, video=None, audio=None, diagnostic_video=None):
+        import math
+        from .tuning_jobs import public_tuning_value
+
+        if not isinstance(scope_id, str) or not scope_id.strip():
+            raise ValueError("Provide the tuning node's persistent scope_id before running it.")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise ValueError("Tuning revision must be a nonnegative integer.")
+        if not isinstance(issue, str):
+            raise ValueError("Diagnostic issue must be text.")
+        start, end = float(issue_start), float(issue_end)
+        if not math.isfinite(start) or not math.isfinite(end):
+            raise ValueError("Diagnostic time range must be finite.")
+        diagnosis = {"description": issue.strip()} if issue.strip() else None
+        if start != -1 or end != -1:
+            if start < 0 or end <= start:
+                raise ValueError("Provide both diagnostic times with 0 <= start < end, or leave both unset.")
+            diagnosis = {"description": issue.strip(), "start": start, "end": end}
+        runtime = get_runtime()
+        _interrupt()
+        sources = await media.encode_inputs(image=image, video=video, audio=audio, references=references)
+        diagnostic = await media.encode_inputs(video=diagnostic_video) if diagnostic_video is not None else []
+        result_media = [{"kind": source.kind, "path": str(source.path) if source.path else None,
+                         "url": source.url, "mime": source.mime, "role": "result_video", "analysisOnly": True}
+                        for source in diagnostic]
+        value = {"scope_id": scope_id, "nonce": revision, "prompt": prompt, "profile_id": profile_id,
+                 "model": text_model, "analysis_model": analysis_model, "target_profile_id": target_profile_id,
+                 "target_model": target_model, "params": parse_object(target_params_json, "target_params_json"),
+                 "domain": domain, "mode": mode, "output": output, "analyze": analyze,
+                 "issue": diagnosis, "media": sources, "resultMedia": result_media, "locale": locale}
+        result = public_tuning_value(runtime, await _await_video_tuning(runtime, value, locale))
+        if not isinstance(result, dict) or not isinstance(result.get("prompt"), str) or not result["prompt"].strip():
+            raise ValueError("Video tuning did not return a usable prompt.")
+        analysis = result.get("analysis") or ""
+        if not isinstance(analysis, str):
+            analysis = json.dumps(analysis, ensure_ascii=False, indent=2)
+        return io.NodeOutput(result["prompt"], analysis, result,
+                             ui={"easyapi_tuning": [result], "easyapi_text": [result["prompt"]]})
+
+
 class EasyAPIPreview(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -1031,4 +1139,4 @@ class EasyAPIPreview(io.ComfyNode):
 NODE_CLASSES = [EasyAPIChat, EasyAPIImages, EasyAPIVideo, EasyAPISpeech, EasyAPITranscribe,
                 EasyAPICountTokens,
                 EasyAPIMedia, EasyAPIJSON, EasyAPITaskQuery, EasyAPITaskWait,
-                EasyAPIResultDownload, EasyAPIRealtime, EasyAPIPreview]
+                EasyAPIResultDownload, EasyAPIRealtime, EasyAPIVideoPromptTuner, EasyAPIPreview]

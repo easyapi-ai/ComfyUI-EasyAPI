@@ -29,6 +29,7 @@ const context = { URL, Float32Array, Uint8Array, DataView, Set, Map, console,
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(catalogFilename, 'utf8').replace(/^export /gm, ''), context);
+vm.runInContext(fs.readFileSync(require('node:path').join(require('node:path').dirname(filename), 'video-tuning-client.js'), 'utf8').replace(/^export /gm, ''), context);
 vm.runInContext(code + '\nglobalThis.testHooks = { RealtimePanel, pcm16Base64 };', context);
 const { RealtimePanel, pcm16Base64 } = context.testHooks;
 const panel = Object.create(RealtimePanel.prototype);

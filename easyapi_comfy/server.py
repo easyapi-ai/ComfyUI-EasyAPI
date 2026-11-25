@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import mimetypes
 import os
 import secrets
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +19,7 @@ from .client import EasyAPIError, normalize_locale
 from .prompt_tools import prompt_models, transform_prompt, prepare_wan_request, run_wan_request, resolve_prompt_media
 from .protocols import PROTOCOLS
 from .runtime import get_runtime
+from .tuning_jobs import get_tuning_jobs
 
 
 _sessions = {}
@@ -24,6 +27,8 @@ _registered = set()
 _SECURE_COOKIE = "easyapi_management_session"
 _HTTP_COOKIE = "easyapi_management_session_http"
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_TUNING_IMAGE_UPLOAD_LIMIT = 10 * 1024 * 1024
+_TUNING_VIDEO_UPLOAD_LIMIT = 100 * 1024 * 1024
 
 
 def _normalize_origin(value):
@@ -317,6 +322,102 @@ def build_routes(runtime=None):
         return web.json_response({"models": rows, "empty": not rows, "authority": "api_key", "locale": locale,
                                   "cache_ttl": client.model_catalog_cache_seconds(locale)},
                                  headers={"Cache-Control": "no-store"})
+
+    @routes.post("/easyapi/video-tuning/media")
+    @_guard
+    async def upload_video_tuning_media(request):
+        require_management(request)
+        if request.content_type != "multipart/form-data":
+            raise web.HTTPUnsupportedMediaType(text="Upload one image or video using multipart/form-data.")
+        reader = await request.multipart()
+        kind, name, mime, temporary, target = None, "", "", None, None
+        size, files = 0, 0
+        try:
+            async for part in reader:
+                if part.name == "kind":
+                    if kind is not None:
+                        raise ValueError("Provide one tuning media kind.")
+                    raw = bytearray()
+                    while chunk := await part.read_chunk(8192):
+                        raw.extend(chunk)
+                        if len(raw) > 32:
+                            raise ValueError("Choose image or video as the tuning media kind.")
+                    kind = raw.decode("utf-8").strip()
+                    if kind not in {"image", "video"}:
+                        raise ValueError("Choose image or video as the tuning media kind.")
+                    limit = _TUNING_IMAGE_UPLOAD_LIMIT if kind == "image" else _TUNING_VIDEO_UPLOAD_LIMIT
+                    if size > limit:
+                        raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=size)
+                elif part.name == "file" and part.filename:
+                    files += 1
+                    if files > 1:
+                        raise ValueError("Upload one tuning media file at a time.")
+                    name = Path(part.filename.replace("\\", "/")).name.replace("\x00", "")[:255]
+                    mime = str(part.headers.get("Content-Type", "")).split(";", 1)[0].lower().strip()
+                    root = Path(rt.input_dir).resolve()
+                    root.mkdir(parents=True, exist_ok=True)
+                    temporary = root / (uuid.uuid4().hex + ".upload")
+                    with temporary.open("xb") as stream:
+                        while chunk := await part.read_chunk(64 * 1024):
+                            size += len(chunk)
+                            limit = _TUNING_IMAGE_UPLOAD_LIMIT if kind == "image" else _TUNING_VIDEO_UPLOAD_LIMIT
+                            if size > limit:
+                                raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=size)
+                            await asyncio.to_thread(stream.write, chunk)
+                else:
+                    raise ValueError("Upload only a file and its image or video kind.")
+            if kind is None or files != 1 or not size:
+                raise ValueError("Choose one nonempty image or video file and its kind.")
+            if mime in {"", "application/octet-stream"}:
+                mime = mimetypes.guess_type(name)[0] or ("image/png" if kind == "image" else "video/mp4")
+            if not mime.startswith(kind + "/") or mime == "image/svg+xml":
+                raise ValueError("The uploaded file type does not match the chosen image or video kind.")
+            suffix = mimetypes.guess_extension(mime) or (".png" if kind == "image" else ".mp4")
+            target = temporary.with_name(uuid.uuid4().hex + suffix)
+            temporary.replace(target)
+            return web.json_response({"media": {"kind": kind, "role": "analysis_image" if kind == "image" else "result_video",
+                                                "analysisOnly": True, "filename": target.name, "type": "easyapi_input",
+                                                "name": name or ("analysis" + suffix), "mime": mime, "ready": True}},
+                                     headers={"Cache-Control": "no-store"})
+        except BaseException:
+            for path in (temporary, target):
+                if path is not None:
+                    path.unlink(missing_ok=True)
+            raise
+
+    @routes.post("/easyapi/video-tuning")
+    @_guard
+    async def start_video_tuning(request):
+        owner = require_management(request)
+        value = await request.json()
+        locale = normalize_locale(value.get("locale") if isinstance(value, dict) else None)
+        job = get_tuning_jobs(rt).create(owner, value, locale)
+        return web.json_response({"run_id": job["run_id"], "state": job["state"]}, status=202,
+                                 headers={"Cache-Control": "no-store"})
+
+    @routes.get("/easyapi/video-tuning/{run_id}")
+    @_guard
+    async def video_tuning_status(request):
+        owner = require_management(request)
+        try:
+            after = int(request.query.get("after", "0"))
+        except ValueError as error:
+            raise ValueError("Event cursor must be a nonnegative integer.") from error
+        try:
+            result = get_tuning_jobs(rt).snapshot(owner, request.match_info["run_id"], after)
+        except KeyError:
+            raise web.HTTPNotFound()
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+    @routes.delete("/easyapi/video-tuning/{run_id}")
+    @_guard
+    async def cancel_video_tuning(request):
+        owner = require_management(request)
+        try:
+            result = await get_tuning_jobs(rt).cancel(owner, request.match_info["run_id"])
+        except KeyError:
+            raise web.HTTPNotFound()
+        return web.json_response(result, headers={"Cache-Control": "no-store"})
 
     @routes.post("/easyapi/prompt/transform")
     @_guard

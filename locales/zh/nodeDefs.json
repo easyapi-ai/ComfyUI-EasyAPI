@@ -1,4 +1,116 @@
 {
+  "EasyAPIVideoPromptTuner": {
+    "display_name": "EasyAPI 视频提示词调优",
+    "description": "独立选择调优文本模型和目标视频模型。单独调优只解析所需上游，不运行下游视频生成。",
+    "inputs": {
+      "profile_id": {
+        "name": "调优连接",
+        "tooltip": "文本模型和素材分析模型使用的连接。"
+      },
+      "text_model": {
+        "name": "文本模型",
+        "tooltip": "用于优化提示词的模型。"
+      },
+      "analysis_model": {
+        "name": "素材分析模型",
+        "tooltip": "可选视觉模型；留空时只使用文字和参数上下文，不分析素材。"
+      },
+      "target_profile_id": {
+        "name": "目标视频连接",
+        "tooltip": "读取目标视频模型能力所用的连接。"
+      },
+      "target_model": {
+        "name": "目标视频模型"
+      },
+      "target_params_json": {
+        "name": "目标视频参数",
+        "tooltip": "JSON 对象，保留时长、分辨率等目标设置；参数建议不会自动改写这些值。"
+      },
+      "prompt": {
+        "name": "原始提示词",
+        "tooltip": "连接上游文字输出或填写原文。连线值在节点执行时解析。"
+      },
+      "domain": {
+        "name": "场景",
+        "options": {
+          "general": "通用",
+          "drama": "剧集／短剧",
+          "ecommerce": "电商／带货"
+        }
+      },
+      "mode": {
+        "name": "生成形态",
+        "options": {
+          "auto": "自动",
+          "text-to-video": "文生视频",
+          "first-frame": "首帧图生",
+          "first-last-frame": "首尾帧",
+          "reference": "多模态参考",
+          "v2v": "视频编辑"
+        }
+      },
+      "output": {
+        "name": "任务",
+        "options": {
+          "quick": "快速优化",
+          "full": "完整分析",
+          "diagnose": "失败片段诊断"
+        }
+      },
+      "analyze": {
+        "name": "先分析素材"
+      },
+      "issue": {
+        "name": "出现了什么问题？"
+      },
+      "issue_start": {
+        "name": "问题起始秒数",
+        "tooltip": "-1 表示不指定分析时间区间。"
+      },
+      "issue_end": {
+        "name": "问题结束秒数",
+        "tooltip": "-1 表示不指定分析时间区间。"
+      },
+      "locale": {
+        "name": "输出语言"
+      },
+      "scope_id": {
+        "name": "节点缓存标识",
+        "tooltip": "隐藏的稳定内部标识。复制节点会生成新标识；不包含 API Key。"
+      },
+      "revision": {
+        "name": "调优版本",
+        "tooltip": "点击“重新调优”时更新，用于请求新的调优结果。"
+      },
+      "references": {
+        "name": "参考素材组"
+      },
+      "image": {
+        "name": "参考图片"
+      },
+      "video": {
+        "name": "参考视频"
+      },
+      "audio": {
+        "name": "参考音频"
+      },
+      "diagnostic_video": {
+        "name": "待诊断成片",
+        "tooltip": "仅作分析证据，不会加入生成参考素材。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "优化提示词"
+      },
+      "1": {
+        "name": "分析"
+      },
+      "2": {
+        "name": "结构化结果"
+      }
+    }
+  },
   "EasyAPIChat": {
     "display_name": "EasyAPI 对话",
     "description": "使用当前连接及操作可用的模型生成文本或多模态响应。",

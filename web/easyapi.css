@@ -460,6 +460,21 @@
 .ea-wan-content > * {flex-shrink:0}
 .ea-wan-footer {flex:none;border-top:1px solid var(--ea-line);padding-top:9px}
 .ea-wan-popover .ea-prompt-popover-heading {flex:none;cursor:move;touch-action:none;user-select:none}
+.ea-tuner-node {max-height:100%;overflow:auto;cursor:default}
+.ea-tuner-content {display:flex;flex-direction:column;gap:12px;min-width:0;padding:8px}
+.ea-tuner-section {display:flex;flex-direction:column;gap:8px;min-width:0;border-bottom:1px solid var(--ea-line);padding-bottom:10px}
+.ea-tuner-section h4 {font:inherit;font-weight:600;margin:0}
+.ea-tuner-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 10px}
+.ea-tuner-node label {display:flex;flex-direction:column;gap:4px;min-width:0}
+.ea-tuner-node :is(input,select,textarea) {width:100%;min-width:0;box-sizing:border-box}
+.ea-tuner-node textarea {resize:vertical;min-height:66px;font:inherit}
+.ea-tuner-node label.ea-checkbox {flex-direction:row;align-items:center;gap:8px}
+.ea-tuner-node input[type=checkbox] {width:auto;flex:none;min-height:0}
+.ea-tuner-actions {display:flex;gap:8px;flex-wrap:wrap}
+.ea-tuner-output {display:flex;flex-direction:column;gap:8px;min-width:0}
+.ea-tuner-output textarea {min-height:90px}
+.ea-tuner-node .ea-preview {max-height:180px}
+.ea-tuner-issue {display:flex;flex-direction:column;gap:7px}
 .ea-model-updates {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ea-model-updates:has(> :only-child:empty),.ea-model-updates:has(> :first-child:empty):has(> :last-child[hidden]) {display:none}
 .ea-prompt-popover .ea-model-updates button {flex:none;width:auto}

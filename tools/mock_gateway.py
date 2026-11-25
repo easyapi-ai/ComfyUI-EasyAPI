@@ -62,6 +62,37 @@ MODELS = {
 }
 
 
+def tuning_fixture(body):
+    """Recognize host-owned structured instructions, never text inside a user prompt."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return None
+    system = "\n".join(message["content"] for message in messages
+                       if isinstance(message, dict) and message.get("role") == "system"
+                       and isinstance(message.get("content"), str))
+    if ("Return one JSON object with facts, uncertainties and invariants" in system or
+            system.startswith("Analyze only the attached media and explicitly supplied facts for video prompt tuning.")):
+        return {"facts": [], "uncertainties": ["Offline fixture does not inspect source media."], "invariants": []}
+    if "Return one JSON object with prompt(string), analysis(string)" not in system:
+        return None
+    original = ""
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user" or not isinstance(message.get("content"), str):
+            continue
+        try:
+            supplied = json.loads(message["content"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(supplied, dict) and isinstance(supplied.get("prompt"), str):
+            original = supplied["prompt"]
+            break
+    return {"prompt": original or "A subject performs one clear action in a stable shot.",
+            "analysis": "Offline fixture preserved the supplied prompt and returned a structured video tuning result.",
+            "changes": ["Structured output verified"], "risks": [], "suggestedParams": {}, "assumptions": [],
+            "diagnosis": {"observations": ["Offline diagnostic fixture"], "causes": ["No real model was called"],
+                          "patches": ["Keep one clear action"], "retest": ["Compare the same input context"]}}
+
+
 def create_app() -> web.Application:
     app = web.Application(client_max_size=128 * 1024 * 1024)
     app["ledger"] = []
@@ -201,10 +232,19 @@ def create_app() -> web.Application:
         body, _ = await parse(request)
         if "count_tokens" in request.path:
             return web.json_response({"input_tokens": 12})
+        structured = tuning_fixture(body) if request.path == "/v1/chat/completions" else None
         if body.get("stream") or "streamGenerateContent" in request.path:
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(request)
-            events = [{"choices": [{"delta": {"content": "离线"}}]}, {"choices": [{"delta": {"content": "验证成功"}}]}, {"usage": {"prompt_tokens": 2, "completion_tokens": 3}}]
+            if structured is None:
+                events = [{"choices": [{"delta": {"content": "离线"}}]}, {"choices": [{"delta": {"content": "验证成功"}}]}, {"usage": {"prompt_tokens": 2, "completion_tokens": 3}}]
+            else:
+                content = json.dumps(structured, ensure_ascii=False)
+                middle = len(content) // 2
+                events = [{"choices": [{"delta": {"content": content[:middle]}}]},
+                          {"choices": [{"delta": {"content": content[middle:]}}]},
+                          {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                          {"usage": {"prompt_tokens": 2, "completion_tokens": 3}}]
             for event in events:
                 encoded = ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode()
                 # Deliberately split multibyte UTF-8 and SSE records.
@@ -212,7 +252,12 @@ def create_app() -> web.Application:
                     await response.write(encoded[start:start + 7])
             await response.write(b"data: [DONE]\n\n")
             return response
-        if "/messages" in request.path:
+        if structured is not None:
+            content = json.dumps(structured, ensure_ascii=False)
+            result = {"id": "chat_tuning_mock", "object": "chat.completion", "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3}}
+        elif "/messages" in request.path:
             result = {"id": "msg_mock", "type": "message", "role": "assistant", "content": [{"type": "text", "text": "离线验证成功"}], "usage": {"input_tokens": 2, "output_tokens": 3}}
         elif "/responses" in request.path:
             result = {"id": "resp_mock", "object": "response", "status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": "离线验证成功"}]}]}

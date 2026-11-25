@@ -169,7 +169,8 @@ export class WanTunerPanel {
     const profiles = getContext().profiles || [];
     this.profile = element("select", {}, element("option", { value: "", textContent: t("chooseConnection") }),
       ...profiles.map(entry => element("option", { value: entry.id, textContent: entry.name || entry.id })));
-    this.profile.value = getContext().profileId || (profiles.length === 1 ? profiles[0].id : "");
+    this.profile.value = profiles.some(entry => entry.id === preferences.profileId) ? preferences.profileId :
+      getContext().profileId || (profiles.length === 1 ? profiles[0].id : "");
     this.model = element("select", { disabled: true });
     this.analysisModel = element("select", { disabled: true });
     this.analyze = element("input", { type: "checkbox", checked: true });

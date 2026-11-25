@@ -46,6 +46,7 @@ Workflows store only connection IDs. The ComfyUI backend keeps keys in its persi
 | EasyAPI Chat | Chat, Responses, Claude Messages, Gemini, and text completion |
 | EasyAPI Images | Synchronous text to image or image editing, selected automatically from reference images; image, url and response outputs |
 | EasyAPI Video | Video generation through the unified `/v1/videos` endpoint; video, URL and response outputs |
+| EasyAPI Video Prompt Tuner | Separate tuning and target model settings; optimized prompt, analysis and structured result outputs |
 | EasyAPI Speech | Text-to-speech with native `AUDIO` output |
 | EasyAPI Transcribe | Transcription and translation for `AUDIO` or `VIDEO` with an audio track, using a compatible model |
 | EasyAPI Count Tokens | Count tokens for compatible message requests |
@@ -56,7 +57,7 @@ Workflows store only connection IDs. The ComfyUI backend keeps keys in its persi
 | EasyAPI Realtime | Use voice or text in the browser and freeze a snapshot for the workflow |
 | EasyAPI Preview | Preview text, JSON, images, audio, video, and media groups |
 
-The extension registers 13 nodes. If an older workflow uses `EasyAPITools`, Moderation, Search, Rerank, Embedding, NativeRequest, Midjourney, or Suno, replace or remove those nodes. Advanced JSON accepts the parameters of the selected operation.
+The extension registers 14 nodes. If an older workflow uses `EasyAPITools`, Moderation, Search, Rerank, Embedding, NativeRequest, Midjourney, or Suno, replace or remove those nodes. Advanced JSON accepts the parameters of the selected operation.
 
 ## Forms and languages
 
@@ -69,6 +70,12 @@ The estimate beside the model reflects the current parameters. Click the price o
 Node names, ports, and controls follow ComfyUI's language setting. The extension provides node definitions in English (`en`), Simplified Chinese (`zh`), and Traditional Chinese (`zh-TW`). Model IDs, operation values, reference roles, and JSON keys are the same across languages.
 
 ### Prompt editor and Wan tuning
+
+Add **EasyAPI Video Prompt Tuner** to the canvas and connect its prompt output to a video node's prompt input. Choose the tuning connection and text/analysis models separately from the target video's connection, model and parameters. You can copy settings from one selected EasyAPI Video node when those settings are local values rather than connected inputs.
+
+**Tune this node** runs the tuner and its required upstream nodes, without running downstream video generation. Upstream image, audio or video generators can still run and incur charges. Connected prompts and media resolve from their actual upstream results; widget defaults never substitute for linked values. Tuning output does not replace the original prompt. Analysis and the structured result have separate outputs.
+
+Each tuner has a stable hidden cache scope, and copied nodes receive new scopes. During normal workflow execution, the server checks actual inputs before reusing a result. **Tune again** changes the revision to request fresh tuning. Browser drafts are previews for inspection or copying and do not substitute for server validation. **Open details** provides the full interface and uses the same partial node execution for linked inputs.
 
 The toolbar at the bottom right of the prompt field provides undo, redo, history, tags, translation, and prompt optimization. With a Wan 3 model selected, the tuning panel offers quick optimization, full analysis, and diagnosis of failed clips. It supports drama and e-commerce scenarios and covers text-to-video, first-frame, first-and-last-frame, multimodal reference, and video-editing workflows.
 

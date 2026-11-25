@@ -1,0 +1,31 @@
+{
+  "1": {
+    "class_type": "EasyAPIVideoPromptTuner",
+    "inputs": {
+      "profile_id": "mock",
+      "text_model": "mock-text",
+      "analysis_model": "",
+      "target_profile_id": "mock",
+      "target_model": "mock-video",
+      "target_params_json": "{\"duration\":4,\"resolution\":\"480p\"}",
+      "prompt": "一位人物坐在窗边安静翻阅书页，镜头固定。",
+      "domain": "drama",
+      "mode": "text-to-video",
+      "output": "quick",
+      "analyze": false,
+      "issue": "",
+      "issue_start": -1,
+      "issue_end": -1,
+      "locale": "zh",
+      "scope_id": "bc345408-d2b1-4bd8-9016-b2a3c028f933",
+      "revision": 0
+    }
+  },
+  "2": {
+    "class_type": "EasyAPIPreview",
+    "inputs": {
+      "text": ["1", 0],
+      "json_value": ["1", 2]
+    }
+  }
+}
