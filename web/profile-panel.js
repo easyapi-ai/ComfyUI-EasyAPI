@@ -45,7 +45,8 @@ export function officialAuthorizationURL(address) {
 }
 
 export class ProfileManager {
-  constructor({ request, bootstrap, onChanged = () => {}, createPresets = null, openExternal = (url) => window.open(url, "_blank", "noopener,noreferrer") }) {
+  constructor({ request, bootstrap, onChanged = () => {}, createPresets = null, createPromptSettings = null,
+                openExternal = (url) => window.open(url, "_blank", "noopener,noreferrer") }) {
     this.request = request; this.bootstrap = bootstrap; this.onChanged = onChanged; this.openExternal = openExternal;
     this.profiles = []; this.defaultId = null; this.selectedId = null; this.labels = []; this.flowVersion = 0; this.profileRefreshSequence = 0;
     this.balances = new Map(); this.balanceViews = new Map(); this.balanceChanges = new Set();
@@ -82,13 +83,22 @@ export class ProfileManager {
     this.connectionView = element("div", { className: "ea-manager-view" }, this.label("p", "managerDescription", { className: "ea-caption" }), this.profileList,
       this.action("newConnection", () => this.newProfile()), this.notice, this.form);
     this.presetPanel = createPresets?.();
+    this.promptSettingsPanel = createPromptSettings?.();
     this.root.append(element("div", { className: "ea-title" }, this.heading,
-      this.action("refresh", () => this.refresh(undefined, { refreshBalances: true }))), this.connectionView);
-    if (this.presetPanel) {
+      this.action("refresh", () => this.refresh(undefined, { refreshBalances: true, refreshPromptModels: true }))), this.connectionView);
+    if (this.presetPanel || this.promptSettingsPanel) {
       this.connectionTab = this.action("connectionsTab", () => this.showSection("connections"));
-      this.presetsTab = this.action("presetsTab", () => this.showSection("presets"));
-      this.tabs = element("div", { className: "ea-manager-tabs", role: "tablist" }, this.connectionTab, this.presetsTab);
-      this.root.insertBefore(this.tabs, this.connectionView); this.root.append(this.presetPanel.root); this.showSection("connections");
+      this.tabs = element("div", { className: "ea-manager-tabs", role: "tablist" }, this.connectionTab);
+      this.root.insertBefore(this.tabs, this.connectionView);
+      if (this.presetPanel) {
+        this.presetsTab = this.action("presetsTab", () => this.showSection("presets"));
+        this.tabs.append(this.presetsTab); this.root.append(this.presetPanel.root);
+      }
+      if (this.promptSettingsPanel) {
+        this.promptSettingsTab = this.action("promptSettingsTab", () => this.showSection("promptSettings"));
+        this.tabs.append(this.promptSettingsTab); this.root.append(this.promptSettingsPanel.root);
+      }
+      this.showSection("connections");
     }
     for (const input of [this.id, this.name, this.base, this.key]) input.addEventListener("input", () => {
       this.dirty = true; this.editorTouched = true; this.updateDisabled();
@@ -111,7 +121,7 @@ export class ProfileManager {
   }
   showError(error) { this.notice.className = "ea-manager-notice ea-error"; this.notice.textContent = (error.code ? error.code + ": " : "") + error.message; }
   selected() { return this.profiles.find((profile) => profile.id === this.selectedId); }
-  async refresh(selectId, { refreshBalances = false } = {}) {
+  async refresh(selectId, { refreshBalances = false, refreshPromptModels = false } = {}) {
     const sequence = ++this.profileRefreshSequence;
     try {
       const data = await this.request("/easyapi/profiles");
@@ -130,24 +140,34 @@ export class ProfileManager {
       else if (!this.dirty && this.selectedId && !profile) this.newProfile();
       this.loaded = true;
       this.presetPanel?.setProfiles(this.profiles, this.defaultId);
+      this.promptSettingsPanel?.setProfiles(this.profiles, this.defaultId, undefined, { refresh: refreshPromptModels });
       if (refreshBalances) void this.refreshBalances();
       else if (!this.connectionView.hidden) {
         for (const profile of this.profiles) if (!this.balances.has(profile.id)) void this.checkBalance(profile.id);
       }
       return this.profiles;
     } catch (error) {
-      if (!this.disposed && sequence === this.profileRefreshSequence) this.showError(error);
+      if (!this.disposed && sequence === this.profileRefreshSequence) {
+        this.showError(error);
+        if (this.promptSettingsPanel && !this.promptSettingsPanel.root.hidden) this.promptSettingsPanel.showProfileError(error);
+      }
       return [];
     }
   }
   showSection(section, profileId) {
     const wasHidden = this.connectionView.hidden;
     this.connectionView.hidden = section !== "connections";
+    this.connectionTab?.setAttribute("aria-selected", String(section === "connections"));
     if (this.presetPanel) {
       this.presetPanel.root.hidden = section !== "presets";
-      this.connectionTab?.setAttribute("aria-selected", String(section === "connections"));
       this.presetsTab?.setAttribute("aria-selected", String(section === "presets"));
       if (section === "presets") { this.presetPanel.setProfiles(this.profiles, this.defaultId, profileId); this.presetPanel.refresh(); }
+    }
+    if (this.promptSettingsPanel) {
+      const visible = section === "promptSettings";
+      this.promptSettingsTab.setAttribute("aria-selected", String(visible));
+      if (visible) this.promptSettingsPanel.setProfiles(this.profiles, this.defaultId, profileId);
+      this.promptSettingsPanel.setVisible(visible);
     }
     if (wasHidden && !this.connectionView.hidden) void this.refreshBalances();
   }
@@ -398,11 +418,12 @@ export class ProfileManager {
     this.renderProfiles(); this.updateDisabled();
     if (this.flow) this.authStatus.textContent = t(this.flow.status === "pending" ? "authorizationPending" : "authorization." + this.flow.status);
     this.presetPanel?.translate();
+    this.promptSettingsPanel?.translate();
   }
   destroy() {
     this.disposed = true; clearTimeout(this.pollTimer); ++this.flowVersion;
     for (const query of this.balances.values()) query.controller.abort();
     this.balances.clear(); this.balanceViews.clear();
-    this.key.value = ""; this.presetPanel?.destroy(); this.root.remove();
+    this.key.value = ""; this.presetPanel?.destroy(); this.promptSettingsPanel?.destroy(); this.root.remove();
   }
 }

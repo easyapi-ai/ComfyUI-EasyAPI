@@ -15,7 +15,8 @@ class VideoTunerPanelFrontendTests(unittest.TestCase):
     def run_browser(self, body):
         root = Path(__file__).parents[1]
         scripts = []
-        for name in ["wan-tuner-core.js", "wan-tuner-panel.js", "video-tuning-state.js", "video-tuner-panel.js", "prompt-editor.js"]:
+        for name in ["prompt-model-preferences.js", "wan-tuner-core.js", "wan-tuner-panel.js", "video-tuning-state.js",
+                     "video-tuner-panel.js", "prompt-editor.js"]:
             source = (root / "web" / name).read_text(encoding="utf-8")
             names = re.findall(r"^export (?:async )?(?:function|class|const) (\w+)", source, re.M)
             source = re.sub(r"^import [\s\S]*?from [\"'][^\"']+[\"'];\r?\n", "", source, flags=re.M)
@@ -106,6 +107,53 @@ resolveRun(success);await running;
 editor=make();document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
 check(resumes===1&&starts===1,'a rebuilt view resumes instead of submitting another paid request');
 check(editor.wanPanel.completed.prompt===success.prompt,'resumed result is visible');
+''')
+
+    def test_tuning_models_remember_choices_and_apply_global_defaults_on_reopen(self):
+        self.run_browser(r'''
+editor.dispose();
+const preferences=createPromptModelPreferences();
+context.profiles.push({id:'q',name:'Other',model_catalog_revision:'r1'});
+writeTuningDraft('generic-test-node',{form:{profileId:'p',model:'old',analysisModel:'vision'}});
+preferences.setFixed('p','tune','fixed');
+preferences.setFixed('p','analysis','old');
+const options={promptModelPreferences:preferences,loadModels:async id=>id==='p'
+ ? [{id:'old'},{id:'fixed'},{id:'vision',supports_image:true}]
+ : [{id:'other'}]};
+editor=make(options);document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
+const panel=editor.wanPanel;
+check(panel.model.value==='fixed','fixed tuning model wins over the idle draft');
+check(panel.analysisModel.value===''&&!panel.modelPreferenceStatus.hidden,'text-only models are not valid for visual analysis');
+const choose=(control,id)=>{control.value=id;control.dispatchEvent(new Event('change',{bubbles:true}));};
+choose(panel.model,'old');choose(panel.analysisModel,'vision');choose(panel.analysisModel,'');
+check(preferences.get('p','tune').recent==='old','an explicit tuning choice is remembered');
+check(preferences.get('p','analysis').recent==='','an explicit text-only choice is remembered');
+await panel.refreshModels({},true);
+check(panel.model.value==='old'&&panel.analysisModel.value==='','refreshing preserves the open panel override');
+choose(panel.profile,'q');await tick();
+check(panel.model.value==='other'&&preferences.get('q','tune').recent===undefined,'another connection uses its own catalog and preference');
+choose(panel.profile,'p');await tick();
+check(panel.model.value==='fixed','switching back restores the connection-specific default');
+preferences.setFixed('p','tune',undefined);preferences.setFixed('p','analysis',undefined);
+editor.close();editor.open('wan');await tick();
+check(panel.model.value==='old'&&panel.analysisModel.value==='','automatic mode reloads remembered text and analysis choices');
+const running=panel.execute();await tick();
+preferences.setFixed('p','tune','fixed');preferences.setFixed('p','analysis','vision');
+editor.close();editor.open('wan');await tick();
+check(panel.model.value==='old'&&panel.analysisModel.value==='', 'reopening leaves active tuning choices intact');
+editor.dispose();resolveRun(success);await running;
+let releaseCatalog;
+editor=make({...options,loadModels:id=>new Promise(resolve=>{releaseCatalog=()=>resolve(options.loadModels(id));})});
+document.getElementById('widget').append(editor.root);editor.open('wan');await tick();
+const resumedDraft=readTuningDraft('generic-test-node');
+check(resumedDraft.form.model==='old'&&resumedDraft.form.analysisModel==='', 'a pending catalog does not wipe resumed model selections');
+check(editor.wanPanel.apply.disabled, 'a resumed result waits for its model options to be validated before apply');
+releaseCatalog();await tick();
+check(editor.wanPanel.model.value==='old'&&editor.wanPanel.analysisModel.value==='', 'resuming restores the choices from the accepted run');
+check(!editor.wanPanel.apply.disabled,'the resumed result remains applicable when its saved models become available');
+check(resumes===1&&starts===1,'preferences never restart an accepted run');
+editor.close();editor.open('wan');await tick();
+check(editor.wanPanel.model.value==='fixed'&&editor.wanPanel.analysisModel.value==='vision', 'the next idle opening applies the current fixed defaults');
 ''')
 
     def test_optional_badcase_is_visible_and_diagnoses_in_quick_and_full_modes(self):

@@ -391,6 +391,24 @@ Object.assign(zhTW, {
   videoProgressPhase_preparing: "準備素材與模型情境", videoProgressPhase_analysis: "分析素材",
   videoProgressPhase_tuning: "調優提示詞", videoProgressPhase_validation: "驗證結果", videoProgressPhase_cache: "重用現有結果",
 });
+Object.assign(en, {
+  promptSettingsTab: "Prompt settings", promptSettingsDescription: "Set default models for each connection. These settings apply to all workflows in this browser.",
+  promptTuningTextModel: "Video tuning text model", promptModelAutomatic: "Automatic · remember last selection",
+  promptModelAutomaticRecent: "Automatic · {model}", promptModelUnavailable: "{model} is unavailable on this connection.",
+  promptModelPreferenceSaved: "Model preference saved.", promptModelPreferenceSaveFailed: "Could not save the model preference in this browser.",
+});
+Object.assign(zh, {
+  promptSettingsTab: "提示词设置", promptSettingsDescription: "为各个连接设置默认模型，应用于当前浏览器中的所有工作流。",
+  promptTuningTextModel: "视频调优文本模型", promptModelAutomatic: "自动 · 记住上次选择",
+  promptModelAutomaticRecent: "自动 · {model}", promptModelUnavailable: "当前连接无法使用 {model}。",
+  promptModelPreferenceSaved: "已保存模型偏好。", promptModelPreferenceSaveFailed: "无法在当前浏览器中保存模型偏好。",
+});
+Object.assign(zhTW, {
+  promptSettingsTab: "提示詞設定", promptSettingsDescription: "為各個連線設定預設模型，套用於目前瀏覽器中的所有工作流程。",
+  promptTuningTextModel: "影片調優文字模型", promptModelAutomatic: "自動 · 記住上次選擇",
+  promptModelAutomaticRecent: "自動 · {model}", promptModelUnavailable: "目前連線無法使用 {model}。",
+  promptModelPreferenceSaved: "已儲存模型偏好。", promptModelPreferenceSaveFailed: "無法在目前瀏覽器中儲存模型偏好。",
+});
 export function hostLocale() { return app.extensionManager?.setting?.get("Comfy.Locale") || "en"; }
 export function localeQuery() { return hostLocale(); }
 export function textKey(text) {

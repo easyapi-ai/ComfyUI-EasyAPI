@@ -65,15 +65,16 @@ const document = { createElement: tag => new Element(tag), body: new Element('bo
 const window = { innerWidth: 900, innerHeight: 800, addEventListener() {}, removeEventListener() {} };
 const context = { document, window, setTimeout, clearTimeout, localStorage, AbortController };
 const source = fs.readFileSync(process.argv[1], 'utf8').replace('export class', 'class');
-vm.runInNewContext(source + '\nglobalThis.PromptEditor = PromptEditor;', context);
-const { PromptEditor } = context;
+const preferencesSource = fs.readFileSync(process.argv[2], 'utf8').replace('export function', 'function');
+vm.runInNewContext(preferencesSource + source + '\nObject.assign(globalThis, { PromptEditor, createPromptModelPreferences });', context);
+const { PromptEditor, createPromptModelPreferences } = context;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const waitForCollapse = () => new Promise(resolve => setTimeout(resolve, 280));
 
 (async () => {
   const revisions = [], requested = [];
   let finishRequest;
-  const make = (historyKey = 'node-1') => new PromptEditor({
+  const make = (historyKey = 'node-1', options = {}) => new PromptEditor({
     value: 'scene', t: key => key, getLocale: () => 'en', historyKey: () => historyKey,
     onInput: text => revisions.push(text),
     getContext: () => ({ profiles: [{ id: 'p1', name: 'Default' }], profileId: 'p1', modelId: 'video-only' }),
@@ -82,6 +83,7 @@ const waitForCollapse = () => new Promise(resolve => setTimeout(resolve, 280));
       requested.push({ payload, signal });
       return new Promise(resolve => { finishRequest = resolve; });
     },
+    ...options,
   });
   const editor = make();
   document.body.append(editor.root);
@@ -209,6 +211,77 @@ const waitForCollapse = () => new Promise(resolve => setTimeout(resolve, 280));
   assert.equal(input.value, 'fresh edit');
   editor.dispose();
 
+  let updatePrimary, updateOther;
+  let primaryModels = [{ id: 'text-small' }, { id: 'text-alternative' }];
+  const settings = createPromptModelPreferences();
+  assert.equal(settings.setFixed('p1', 'optimize', 'text-small'), true);
+  const makeOptimizer = () => make('shared-preference', {
+    t: (key, values) => values?.model ? `${key}: ${values.model}` : key,
+    getContext: () => ({ profiles: [{ id: 'p1' }, { id: 'p2' }], profileId: 'p1', modelId: 'video-only' }),
+    loadModels: async (profileId, _signal, update) => {
+      if (profileId === 'p1') { updatePrimary = update; return primaryModels; }
+      updateOther = update;
+      return [{ id: 'text-large' }, { id: 'text-other' }];
+    },
+    promptModelPreferences: createPromptModelPreferences(),
+  });
+  const optimizerControls = instance => {
+    const children = descendants(instance.body);
+    return {
+      profile: children.find(node => node.attrs['aria-label'] === 'connection'),
+      model: children.find(node => node.attrs['aria-label'] === 'promptTransformModel'),
+      run: children.find(node => node.className === 'ea-primary'),
+      children,
+    };
+  };
+  const firstOptimizer = makeOptimizer();
+  firstOptimizer.open('optimize'); await tick();
+  const firstControls = optimizerControls(firstOptimizer);
+  assert.equal(firstControls.model.value, 'text-small');
+  firstControls.run.fire('click');
+  assert.equal(requested.at(-1).payload.model, 'text-small');
+  assert.equal(settings.get('p1', 'optimize').recent, undefined);
+  finishRequest({ text: 'configured model result' }); await tick();
+  firstControls.model.value = 'text-alternative'; firstControls.model.fire('change');
+  updatePrimary({ models: primaryModels, error: new Error('refresh failed') });
+  const retry = firstControls.children.find(node => node.textContent === 'retryModels');
+  assert.equal(retry.hidden, false);
+  retry.fire('click'); await tick();
+  assert.equal(firstControls.model.value, 'text-alternative');
+  firstControls.profile.value = 'p2'; firstControls.profile.fire('change'); await tick();
+  assert.equal(firstControls.model.value, '');
+  firstControls.model.value = 'text-large'; firstControls.model.fire('change');
+  assert.equal(settings.get('p2', 'optimize').recent, 'text-large');
+  firstControls.run.fire('click');
+  assert.equal(requested.at(-1).payload.model, 'text-large');
+  updateOther({ models: [{ id: 'text-other' }] });
+  assert.equal(requested.at(-1).signal.aborted, true);
+  assert.equal(firstControls.model.value, '');
+  assert.equal(firstControls.run.disabled, true);
+  updateOther({ models: [{ id: 'text-large' }, { id: 'text-other' }] });
+  assert.equal(firstControls.model.value, '');
+  assert.equal(firstControls.run.disabled, true);
+  firstControls.model.value = 'text-large'; firstControls.model.fire('change');
+  assert.equal(firstControls.run.disabled, false);
+  finishRequest({ text: 'discarded result' }); await tick();
+  firstOptimizer.dispose();
+
+  assert.equal(settings.setFixed('p1', 'optimize', 'retired-model'), true);
+  primaryModels = [{ id: 'text-small' }];
+  const nextOptimizer = makeOptimizer();
+  nextOptimizer.open('optimize'); await tick();
+  const nextControls = optimizerControls(nextOptimizer);
+  assert.equal(nextControls.model.value, '');
+  assert.equal(nextControls.run.disabled, true);
+  assert.equal(nextControls.children.some(node => !node.hidden && node.textContent === 'promptModelUnavailable: retired-model'), true);
+  updatePrimary({ models: [{ id: 'text-small' }, { id: 'retired-model' }] });
+  assert.equal(nextControls.model.value, 'retired-model');
+  assert.equal(nextControls.run.disabled, false);
+  nextControls.profile.value = 'p2'; nextControls.profile.fire('change'); await tick();
+  assert.equal(nextControls.model.value, 'text-large');
+  assert.equal(nextControls.run.disabled, false);
+  nextOptimizer.dispose();
+
   const params = { duration: 15, resolution: '480P' };
   let tuner;
   class Tuner {
@@ -239,9 +312,9 @@ const waitForCollapse = () => new Promise(resolve => setTimeout(resolve, 280));
   wan.dispose();
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
-        source = Path(__file__).resolve().parents[1] / "web" / "prompt-editor.js"
+        web = Path(__file__).resolve().parents[1] / "web"
         result = subprocess.run(
-            [shutil.which("node"), "-e", script, str(source)],
+            [shutil.which("node"), "-e", script, str(web / "prompt-editor.js"), str(web / "prompt-model-preferences.js")],
             capture_output=True,
             text=True,
             timeout=30,

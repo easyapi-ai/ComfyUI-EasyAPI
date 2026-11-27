@@ -92,6 +92,7 @@ export class VideoTunerNodePanel {
   constructor(node, services) {
     this.node = node; Object.assign(this, services);
     this.profiles = []; this.controls = {}; this.labels = []; this.fieldLabels = []; this.loads = {}; this.optionLabels = {}; this.writing = false; this.allowAnalysisDefault = true;
+    this.usePromptModelDefaults = !this.app?.configuringGraph;
     this.root = element("section", { className: "easyapi-panel ea-node-panel ea-tuner-node" });
     this.content = element("div", { className: "ea-tuner-content" }); this.root.append(this.content);
     this.status = element("p", { className: "ea-status", role: "status" });
@@ -107,8 +108,9 @@ export class VideoTunerNodePanel {
       this.field("tunerConnection", "Tuning connection", this.profile), this.field("promptTransformModel", "Text model", this.textPicker.root),
       this.field("wanAnalysisModel", "Media analysis model", this.analysisPicker.root)));
     this.modelsStatus = element("span", { className: "ea-caption", role: "status" });
+    this.modelPreferenceStatus = element("p", { className: "ea-caption", role: "status", hidden: true });
     this.refreshButton = this.action("refresh", "Refresh models", () => this.refreshModels(true));
-    tuning.append(element("div", { className: "ea-model-updates" }, this.modelsStatus, this.refreshButton));
+    tuning.append(element("div", { className: "ea-model-updates" }, this.modelsStatus, this.refreshButton), this.modelPreferenceStatus);
     this.schema = element("div", { className: "ea-schema" });
     this.paramsEditor = element("textarea", { rows: 3, spellcheck: false });
     this.paramsEditor.setAttribute("aria-label", this.text("tunerTargetParams", "Target video parameters"));
@@ -288,11 +290,26 @@ export class VideoTunerNodePanel {
   }
   async refreshPromptModels(refresh = false) {
     const profile = linked(this.node, "profile_id") ? "" : String(value(this.node, "profile_id"));
+    this.promptModels = [];
+    this.unavailableModels = {};
+    this.showModelPreferenceStatus();
     return this.loadCatalog("prompt", profile, this.loadPromptModels, models => {
       this.promptModels = models;
-      if (!value(this.node, "text_model") && models.length === 1) this.write("text_model", models[0].id);
       const visualModels = models.filter(visual);
-      if (models.length && this.allowAnalysisDefault && this.defaultAnalysisProfile !== profile) {
+      const preferences = profile && this.usePromptModelDefaults ? this.promptModelPreferences : null;
+      if (!value(this.node, "text_model") && !linked(this.node, "text_model")) {
+        const fallback = models.length === 1 ? models[0].id : undefined;
+        const tune = preferences?.resolve(profile, "tune", models, [fallback]);
+        const selected = tune?.value ?? fallback;
+        if (selected) this.write("text_model", selected);
+        this.unavailableModels.tune = tune?.unavailable;
+      }
+      if (preferences && this.allowAnalysisDefault && !value(this.node, "analysis_model") && !linked(this.node, "analysis_model")) {
+        const analysis = preferences.resolve(profile, "analysis", visualModels,
+          [value(this.node, "text_model") || undefined, visualModels.length === 1 ? visualModels[0].id : undefined]);
+        if (analysis.value) this.write("analysis_model", analysis.value);
+        this.unavailableModels.analysis = analysis.unavailable;
+      } else if (!preferences && models.length && this.allowAnalysisDefault && this.defaultAnalysisProfile !== profile) {
         this.defaultAnalysisProfile = profile;
         if (!value(this.node, "analysis_model")) {
           const preferred = visualModels.find(model => model.id === value(this.node, "text_model")) || (visualModels.length === 1 ? visualModels[0] : null);
@@ -301,6 +318,7 @@ export class VideoTunerNodePanel {
       }
       this.textPicker.setItems(models, String(value(this.node, "text_model")));
       this.analysisPicker.setItems(visualModels, String(value(this.node, "analysis_model")));
+      this.showModelPreferenceStatus();
       this.sync();
     }, refresh);
   }
@@ -315,6 +333,20 @@ export class VideoTunerNodePanel {
   chooseModel(name, id) {
     if (name === "analysis_model") this.allowAnalysisDefault = false;
     if (this.write(name, id)) { this.sync(); if (name === "target_model") this.refreshSchema(); }
+    const role = name === "text_model" ? "tune" : name === "analysis_model" ? "analysis" : null;
+    const profile = linked(this.node, "profile_id") ? "" : String(value(this.node, "profile_id"));
+    if (!role || !profile || !this.promptModelPreferences || linked(this.node, name)) return;
+    if (!(role === "analysis" && id === "") && !this.promptModels?.some(model => model.id === id && (role !== "analysis" || visual(model)))) return;
+    if (this.unavailableModels) delete this.unavailableModels[role];
+    this.showModelPreferenceStatus(!this.promptModelPreferences.remember(profile, role, id));
+  }
+
+  showModelPreferenceStatus(saveFailed = false) {
+    const unavailable = [...new Set(Object.values(this.unavailableModels || {}).filter(Boolean))];
+    const message = saveFailed ? this.text("promptModelPreferenceSaveFailed", "Could not remember the model selection.") :
+      unavailable.map(model => this.t?.("promptModelUnavailable", { model }) || `The default model ${model} is unavailable.`).join(" ");
+    this.modelPreferenceStatus.textContent = message;
+    this.modelPreferenceStatus.hidden = !message;
   }
   async refreshSchema() {
     this.schemaAbort?.abort(); this.schemaAbort = new AbortController(); const request = this.schemaAbort;
@@ -432,7 +464,7 @@ export class VideoTunerNodePanel {
       finally { area.remove(); }
     }
   }
-  configure() { this.allowAnalysisDefault = false; ensureTunerScope(this.node); this.sync(); this.restoreDraft(); this.refreshProfiles(); }
+  configure() { this.usePromptModelDefaults = this.allowAnalysisDefault = false; ensureTunerScope(this.node); this.sync(); this.restoreDraft(); this.refreshProfiles(); }
   backingChanged(name) {
     if (this.writing || this.disposed) return;
     this.sync();

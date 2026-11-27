@@ -6,6 +6,8 @@ import { makeFieldHelp, renderSchemaForm } from "./ui-forms.js";
 import { ProfileManager, EASYAPI_SIDEBAR_ID } from "./profile-panel.js";
 import { PresetPanel } from "./preset-panel.js";
 import { PromptEditor } from "./prompt-editor.js";
+import { createPromptModelPreferences } from "./prompt-model-preferences.js";
+import { PromptSettingsPanel } from "./prompt-settings-panel.js";
 import { createModelCatalog } from "./model-catalog.js";
 import { createVideoTuningClient } from "./video-tuning-client.js";
 import { installVideoTunerNode } from "./video-tuner-node.js";
@@ -16,6 +18,7 @@ sheet.rel = "stylesheet";
 sheet.href = new URL("./easyapi.css", import.meta.url).href;
 document.head.append(sheet);
 const panels = new Set();
+const promptModelPreferences = createPromptModelPreferences();
 const registeredOperations = new Map();
 const PRESET_NODES = new Set(["EasyAPIChat", "EasyAPIImages", "EasyAPIVideo", "EasyAPISpeech", "EasyAPITranscribe", "EasyAPIRealtime", "EasyAPICountTokens"]);
 const translatedText = new Set();
@@ -381,6 +384,7 @@ let managerSidebarRegistered = false;
 function getProfileManager() {
   if (!profileManager) profileManager = new ProfileManager({
     request: jsonRequest, bootstrap,
+    createPromptSettings: () => new PromptSettingsPanel({ loadModels: promptModels, promptModelPreferences }),
     createPresets: () => new PresetPanel({
       request: jsonRequest, mutation: (path, body, method) => profileManager.mutation(path, body, method),
       catalog: modelCatalog,
@@ -397,6 +401,10 @@ function getProfileManager() {
       });
       const presetPanel = profileManager?.presetPanel;
       if (profileId && presetPanel?.profile.value === profileId) updates.push(presetPanel.refreshModels());
+      const settingsPanel = profileManager?.promptSettingsPanel;
+      if (profileId && settingsPanel?.profile.value === profileId && !settingsPanel.root.hidden) {
+        updates.push(settingsPanel.refreshModels());
+      }
       await Promise.allSettled(updates);
     },
   });
@@ -694,6 +702,7 @@ class NodePanel {
       },
       getContext: () => this.promptContext(),
       loadModels: promptModels, transform: transformPrompt, resolveMedia: resolvePromptMedia,
+      promptModelPreferences,
       videoTuning: videoTuningClient, tuningScopeId: () => videoTuningScope(this.node),
       historyKey: (create) => this.promptHistoryKey(create),
     });
@@ -1384,7 +1393,7 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name === "EasyAPIVideoPromptTuner") {
       installVideoTunerNode(nodeType, { app, api, t, loadProfiles: nodeProfiles,
-        loadPromptModels: promptModels, loadVideoModels: videoModels,
+        loadPromptModels: promptModels, loadVideoModels: videoModels, promptModelPreferences,
         modelPicker: onSelect => new ModelPicker(onSelect),
         loadTargetSchema: ({ profileId, modelId, locale }, signal) => jsonRequest("/easyapi/schema?" +
           new URLSearchParams({ profile_id: profileId, model: modelId, operation: "video-generation", locale: locale || localeQuery() }), { signal }),

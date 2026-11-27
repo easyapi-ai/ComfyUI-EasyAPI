@@ -151,13 +151,14 @@ export async function videoFrames(media, issue, signal, maxFrames = 7) {
 
 export class WanTunerPanel {
   constructor({ t, getContext, loadModels, transform, resolveMedia, onApply, preferences = {}, onPreferences,
-                prepareVideo = videoFrames, knowledgeLoader = loadKnowledge }) {
+                promptModelPreferences, preserveInitialModels = false, prepareVideo = videoFrames, knowledgeLoader = loadKnowledge }) {
     Object.assign(this, { t, getContext, loadModels, transform, resolveMedia, onApply, onPreferences,
-      prepareVideo, knowledgeLoader });
+      promptModelPreferences, prepareVideo, knowledgeLoader });
     this.root = element("div", { className: "ea-wan-panel" });
     this.addedMedia = [];
     this.objectUrls = [];
     this.modelPreferences = new Map();
+    this.modelOverrides = {};
     this.contextKey = contextFingerprint(getContext());
     this.shapeKey = mediaShape(getContext());
     this.domain = select(["drama", "ecommerce"], value => t("wanDomain_" + value));
@@ -171,6 +172,10 @@ export class WanTunerPanel {
       ...profiles.map(entry => element("option", { value: entry.id, textContent: entry.name || entry.id })));
     this.profile.value = profiles.some(entry => entry.id === preferences.profileId) ? preferences.profileId :
       getContext().profileId || (profiles.length === 1 ? profiles[0].id : "");
+    if (!preferences.profileId || preferences.profileId === this.profile.value) {
+      this.modelPreferences.set(this.profile.value, preferences);
+      if (preserveInitialModels) this.modelOverrides = { tune: preferences.model, analysis: preferences.analysisModel };
+    }
     this.model = element("select", { disabled: true });
     this.analysisModel = element("select", { disabled: true });
     this.analyze = element("input", { type: "checkbox", checked: true });
@@ -184,6 +189,7 @@ export class WanTunerPanel {
     this.mediaList = element("ul", { className: "ea-wan-media" });
     this.status = element("p", { className: "ea-prompt-status", role: "status" });
     this.catalogStatus = element("span", { className: "ea-caption", role: "status" });
+    this.modelPreferenceStatus = element("p", { className: "ea-caption", role: "status", hidden: true });
     this.retryModels = button(t("retryModels"), () => this.refreshModels({}, true));
     this.retryModels.hidden = true;
     this.resultPrompt = element("textarea", { rows: 6, readOnly: true });
@@ -214,18 +220,25 @@ export class WanTunerPanel {
     this.content = element("div", { className: "ea-wan-content" }, form, this.contextParams,
       element("p", { className: "ea-caption", textContent: t("promptTransformCost") }),
       element("div", { className: "ea-model-updates" }, this.catalogStatus, this.retryModels),
+      this.modelPreferenceStatus,
       element("details", { open: true, className: "ea-wan-materials" }, element("summary", { textContent: t("wanMaterials") }),
         this.mediaList, field(t("wanAddMedia"), attachment), field(t("wanAnalyzeMedia"), this.analyze)),
       this.issueFields, this.status, this.result);
     this.root.append(this.content, element("div", { className: "ea-prompt-actions ea-wan-footer" }, this.run, this.cancel, this.apply));
-    for (const control of [this.domain, this.mode, this.output, this.model, this.analysisModel, this.analyze,
+    for (const control of [this.domain, this.mode, this.output, this.analyze,
       this.issue, this.start, this.end, this.videoUrl]) control.addEventListener("input", () => this.changed());
+    this.model.addEventListener("change", () => this.modelChanged("tune", this.model));
+    this.analysisModel.addEventListener("change", () => this.modelChanged("analysis", this.analysisModel));
     this.output.addEventListener("change", () => this.updateIssue());
-    this.profile.addEventListener("change", () => { this.invalidate(); this.refreshModels(); });
+    this.profile.addEventListener("change", () => {
+      this.modelOverrides = {};
+      this.invalidate();
+      this.refreshModels();
+    });
     this.updateIssue();
     this.renderMedia();
     this.invalidate(false);
-    this.refreshModels(preferences);
+    this.refreshModels();
     this.timer = setInterval(() => this.checkContext(), 500);
   }
 
@@ -254,8 +267,27 @@ export class WanTunerPanel {
     this.invalidate();
     const preferences = { domain: this.domain.value, mode: this.mode.value, shape: this.shapeKey, output: this.output.value,
       profileId: this.profile.value, model: this.model.value, analysisModel: this.analysisModel.value };
-    this.modelPreferences.set(this.profile.value, preferences);
+    if (this.models?.length) this.modelPreferences.set(this.profile.value, preferences);
     this.onPreferences?.(preferences);
+  }
+
+  modelChanged(role, control) {
+    this.changed();
+    if (!this.promptModelPreferences || control.disabled) return;
+    const id = control.value;
+    if (!(role === "analysis" && id === "") &&
+        !this.models?.some(model => model.id === id && (role !== "analysis" || visualModel(model)))) return;
+    this.modelOverrides[role] = id;
+    if (this.unavailableModels) delete this.unavailableModels[role];
+    this.showModelPreferenceStatus(!this.promptModelPreferences.remember(this.profile.value, role, id));
+  }
+
+  showModelPreferenceStatus(saveFailed = false) {
+    const unavailable = [...new Set(Object.values(this.unavailableModels || {}).filter(Boolean))];
+    const message = saveFailed ? this.t("promptModelPreferenceSaveFailed") :
+      unavailable.map(model => this.t("promptModelUnavailable", { model })).join(" ");
+    this.modelPreferenceStatus.textContent = message;
+    this.modelPreferenceStatus.hidden = !message;
   }
 
   updateIssue() {
@@ -315,6 +347,40 @@ export class WanTunerPanel {
     return JSON.stringify([this.profile.value, profile?.model_catalog_revision]);
   }
 
+  applyModelPreferences(models, visual, preferences, overrides = {}) {
+    const nodeModel = this.getContext().modelId;
+    const onlyModel = models.length === 1 ? models[0].id : undefined;
+    const onlyAnalysis = visual.length === 1 ? visual[0].id : undefined;
+    const resolve = (role, choices, fallbacks) => {
+      const override = overrides[role];
+      if (override !== undefined) return { value: choices.some(model => model.id === override) ? override : "" };
+      return this.promptModelPreferences?.resolve(this.profile.value, role, choices, fallbacks) ??
+        { value: fallbacks.find(id => choices.some(model => model.id === id)) || "" };
+    };
+    const textFallbacks = this.promptModelPreferences ? [preferences.model, nodeModel, onlyModel] :
+      [preferences.model || nodeModel, onlyModel];
+    const tune = resolve("tune", models, textFallbacks);
+    const analysis = resolve("analysis", visual, [preferences.analysisModel || undefined, tune.value || undefined, onlyAnalysis]);
+    this.model.value = tune.value;
+    this.analysisModel.value = analysis.value;
+    this.unavailableModels = { tune: tune.unavailable, analysis: analysis.unavailable };
+    this.showModelPreferenceStatus();
+  }
+
+  syncModelPreferences() {
+    if (!this.promptModelPreferences || this.request || this.runId || this.uploading) return;
+    this.modelOverrides = {};
+    if (!this.models || this.modelRequest?.signal.aborted) {
+      this.resetModelDefaults = true;
+      return;
+    }
+    const previous = this.model.value, previousAnalysis = this.analysisModel.value;
+    this.applyModelPreferences(this.models, this.models.filter(visualModel),
+      this.modelPreferences.get(this.profile.value) || { model: previous, analysisModel: previousAnalysis });
+    this.run.disabled = !this.model.value;
+    if (previous !== this.model.value || previousAnalysis !== this.analysisModel.value) this.changed();
+  }
+
   async refreshModels(preferences = {}, refresh = false) {
     this.modelRequest?.abort();
     const request = new AbortController();
@@ -322,6 +388,16 @@ export class WanTunerPanel {
     this.catalogKey = this.modelScopeKey();
     preferences = this.modelPreferences.get(this.profile.value) ||
       (!preferences.profileId || preferences.profileId === this.profile.value ? preferences : {});
+    const keepModels = this.modelProfileId === this.profile.value && this.models &&
+      (this.promptModelPreferences || this.request || this.runId);
+    const currentModels = keepModels ? { tune: this.unavailableModels?.tune ? undefined : this.model.value,
+      analysis: this.unavailableModels?.analysis ? undefined : this.analysisModel.value } : {};
+    if (keepModels && (this.request || this.runId)) this.modelPreferences.set(this.profile.value,
+      { ...preferences, model: currentModels.tune, analysisModel: currentModels.analysis });
+    this.modelProfileId = this.profile.value;
+    this.models = undefined;
+    this.unavailableModels = undefined;
+    this.showModelPreferenceStatus();
     this.run.disabled = this.model.disabled = this.analysisModel.disabled = true;
     this.model.replaceChildren(); this.analysisModel.replaceChildren();
     this.model.value = this.analysisModel.value = "";
@@ -329,6 +405,7 @@ export class WanTunerPanel {
     if (!this.profile.value) { this.catalogStatus.textContent = this.t("profileNeeded"); return; }
     this.catalogStatus.textContent = this.t("loadingModels");
     let applied;
+    const removedRoles = new Set();
     const applyModels = (models) => {
       if (request.signal.aborted || applied === models) return;
       const previous = this.model.value, previousAnalysis = this.analysisModel.value;
@@ -337,14 +414,28 @@ export class WanTunerPanel {
       this.models = models;
       this.model.replaceChildren(element("option", { value: "", textContent: this.t("chooseModel") }),
         ...models.map(item => element("option", { value: item.id, textContent: item.display_name || item.id })));
-      const wanted = replacing ? previous : preferences.model || this.getContext().modelId;
-      this.model.value = models.some(item => item.id === wanted) ? wanted : !replacing && models.length === 1 ? models[0].id : "";
       const visual = models.filter(visualModel);
       this.analysisModel.replaceChildren(element("option", { value: "", textContent: this.t("wanAnalysisOptional") }),
         ...visual.map(item => element("option", { value: item.id, textContent: item.display_name || item.id })));
-      const wantedAnalysis = replacing ? previousAnalysis : preferences.analysisModel;
-      this.analysisModel.value = visual.some(item => item.id === wantedAnalysis) ? wantedAnalysis : replacing ? "" :
-        visual.some(item => item.id === this.model.value) ? this.model.value : visual.length === 1 ? visual[0].id : "";
+      if (replacing) {
+        for (const [role, control, previousValue, choices] of [
+          ["tune", this.model, previous, models], ["analysis", this.analysisModel, previousAnalysis, visual],
+        ]) {
+          const unavailable = this.unavailableModels?.[role];
+          const wanted = previousValue || (!this.request && !this.runId && !removedRoles.has(role) ? unavailable : "");
+          control.value = choices.some(item => item.id === wanted) ? wanted : "";
+          if (previousValue && !control.value) {
+            removedRoles.add(role);
+            const fixed = this.promptModelPreferences?.get(this.profile.value, role).fixed;
+            if (fixed === previousValue) this.unavailableModels[role] = fixed;
+          } else if (unavailable && choices.some(item => item.id === unavailable)) delete this.unavailableModels[role];
+        }
+        this.showModelPreferenceStatus();
+      } else {
+        this.applyModelPreferences(models, visual, preferences,
+          { ...(this.resetModelDefaults ? {} : currentModels), ...this.modelOverrides });
+        this.resetModelDefaults = false;
+      }
       this.model.disabled = !models.length;
       this.analysisModel.disabled = !visual.length;
       this.run.disabled = !this.model.value || Boolean(this.request);
@@ -355,7 +446,9 @@ export class WanTunerPanel {
       if (request.signal.aborted) return;
       if (state.invalidated) {
         request.abort();
-        this.invalidate(); applied = undefined; this.models = [];
+        this.invalidate(); applied = undefined; this.models = undefined;
+        this.unavailableModels = undefined;
+        this.showModelPreferenceStatus();
         this.model.replaceChildren(); this.analysisModel.replaceChildren();
         this.model.value = this.analysisModel.value = "";
         this.run.disabled = this.model.disabled = this.analysisModel.disabled = true;

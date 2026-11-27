@@ -66,9 +66,9 @@ function snapshot(text, start = text.length, end = start) {
 export class PromptEditor {
   constructor({ value = "", t, onInput, getContext, loadModels, transform, resolveMedia, historyKey,
                 getLocale = () => "", loadWanPanel = () => import("./video-tuner-panel.js"),
-                videoTuning, tuningScopeId, videoPanelOptions = {} }) {
+                videoTuning, tuningScopeId, videoPanelOptions = {}, promptModelPreferences }) {
     Object.assign(this, { t, onInput, getContext, loadModels, transform, resolveMedia, historyKey, getLocale, loadWanPanel });
-    Object.assign(this, { videoTuning, tuningScopeId, videoPanelOptions });
+    Object.assign(this, { videoTuning, tuningScopeId, videoPanelOptions, promptModelPreferences });
     this.current = snapshot(String(value ?? ""));
     this.undoStack = [];
     this.redoStack = [];
@@ -590,6 +590,7 @@ export class PromptEditor {
   renderTransform(mode) {
     const { profiles = [], profileId, modelId } = this.getContext();
     const connections = profiles.filter((entry) => entry.id);
+    const preferences = mode === "optimize" ? this.promptModelPreferences : null;
     const profile = element("select");
     const model = element("select", { disabled: true });
     const language = element("select", {}, ...LANGUAGES.map(([code, label]) => option(code, this.t(label))));
@@ -598,6 +599,11 @@ export class PromptEditor {
     language.value = this.language || defaultLanguage;
     const status = element("p", { className: "ea-prompt-status", role: "status" });
     const catalogStatus = element("span", { className: "ea-caption", role: "status" });
+    const preferenceStatus = element("p", { className: "ea-caption", role: "status", hidden: true });
+    const showPreferenceStatus = (message = "") => {
+      preferenceStatus.textContent = message;
+      preferenceStatus.hidden = !message;
+    };
     const retry = button(this.t("retryModels"), () => refreshModels(true));
     retry.hidden = true;
     const resultText = element("textarea", { rows: 3, readOnly: true });
@@ -620,19 +626,20 @@ export class PromptEditor {
     this.body.replaceChildren(element("div", { className: "ea-prompt-form" }, ...controls),
       element("p", { className: "ea-caption", textContent: this.t("promptTransformCost") }),
       element("div", { className: "ea-model-updates" }, catalogStatus, retry),
+      ...(preferences ? [preferenceStatus] : []),
       status, element("div", { className: "ea-prompt-actions" }, run), result);
     profile.replaceChildren(option("", this.t("chooseConnection"), true),
       ...connections.map((entry) => option(entry.id, entry.name || entry.id)));
     profile.value = connections.some((entry) => entry.id === profileId) ? profileId : connections.length === 1 ? connections[0].id : "";
     profile.disabled = !connections.length;
 
-    let availableModels = [], loadedScopeKey;
+    let availableModels = [], loadedScopeKey, preferenceProfileId, chosenModel, selectionInvalidated;
     const syncControls = () => {
       const running = Boolean(this.transformRequest);
       profile.disabled = running || !connections.length;
       language.disabled = running;
       model.disabled = running || !availableModels.length;
-      run.disabled = running || !model.value || !this.current.text.trim();
+      run.disabled = running || !availableModels.some((item) => item.id === model.value) || !this.current.text.trim();
     };
     const scopeKey = () => JSON.stringify([profile.value,
       this.getContext().profiles?.find((row) => row.id === profile.value)?.model_catalog_revision, this.getLocale()]);
@@ -643,10 +650,16 @@ export class PromptEditor {
       const request = new AbortController();
       this.modelRequest = request;
       clearResult();
+      showPreferenceStatus();
       model.replaceChildren(option("", this.t("chooseModel"), true));
       model.value = "";
       model.disabled = run.disabled = true;
       const id = profile.value;
+      if (preferences && id !== preferenceProfileId) {
+        preferenceProfileId = id;
+        chosenModel = "";
+        selectionInvalidated = false;
+      }
       loadedScopeKey = scopeKey(); availableModels = [];
       syncControls();
       if (!id) { catalogStatus.textContent = this.t("profileNeeded"); return; }
@@ -658,12 +671,21 @@ export class PromptEditor {
         const choices = models.filter((item) => item.id);
         availableModels = choices;
         applied = models;
-        const preferred = replacing ? previous : this.preferredModels.get(id) || (id === profileId ? modelId : "");
+        const localModel = this.preferredModels.get(id);
+        const nodeModel = id === profileId ? modelId : "";
+        const onlyModel = choices.length === 1 ? choices[0].id : "";
+        const resolved = preferences?.resolve(id, "optimize", choices, [localModel, nodeModel, onlyModel]);
+        let preferred = replacing ? previous : localModel || nodeModel;
+        if (resolved) preferred = selectionInvalidated ? "" : previous || chosenModel || resolved.value;
         model.replaceChildren(option("", this.t("chooseModel"), true), ...choices.map((item) => option(item.id,
           item.display_name && item.display_name !== item.id ? item.display_name + " · " + item.id : item.id)));
-        model.value = choices.some((item) => item.id === preferred) ? preferred : !replacing && choices.length === 1 ? choices[0].id : "";
-        if (replacing && previous !== model.value) { this.transformRequest?.abort(); this.transformRequest = null; clearResult(); }
+        model.value = choices.some((item) => item.id === preferred) ? preferred : !resolved && !replacing ? onlyModel : "";
+        if (replacing && previous !== model.value) {
+          if (preferences && previous && !model.value) selectionInvalidated = true;
+          this.transformRequest?.abort(); this.transformRequest = null; clearResult();
+        }
         syncControls();
+        showPreferenceStatus(!model.value && resolved?.unavailable ? this.t("promptModelUnavailable", { model: resolved.unavailable }) : "");
         catalogStatus.textContent = choices.length ? "" : this.t("noModels");
       };
       const update = (state) => {
@@ -674,6 +696,7 @@ export class PromptEditor {
           availableModels = [];
           model.replaceChildren(option("", this.t("chooseModel"), true)); model.value = "";
           syncControls();
+          showPreferenceStatus();
         } else if (state.models) applyModels(state.models);
         retry.hidden = !state.error && !state.invalidated;
         if (state.error) catalogStatus.textContent = state.invalidated ? state.error.message : this.t("modelUpdateFailed");
@@ -693,8 +716,10 @@ export class PromptEditor {
       this.transformRequest = request;
       const revision = this.revision;
       const payload = { action: mode, prompt: text, profile_id: profile.value, model: model.value };
-      if (mode === "translate") payload.target_language = language.value;
-      this.preferredModels.set(profile.value, model.value);
+      if (mode === "translate") {
+        payload.target_language = language.value;
+        this.preferredModels.set(profile.value, model.value);
+      }
       clearResult();
       run.disabled = profile.disabled = model.disabled = language.disabled = true;
       status.textContent = this.t("promptTransformRunning");
@@ -716,9 +741,16 @@ export class PromptEditor {
     };
     profile.addEventListener("change", () => refreshModels());
     model.addEventListener("change", () => {
-      this.preferredModels.set(profile.value, model.value);
       clearResult();
-      run.disabled = !model.value || !this.current.text.trim();
+      if (availableModels.some((item) => item.id === model.value)) {
+        this.preferredModels.set(profile.value, model.value);
+        if (preferences) {
+          chosenModel = model.value;
+          selectionInvalidated = false;
+          showPreferenceStatus(preferences.remember(profile.value, "optimize", model.value) ? "" : this.t("promptModelPreferenceSaveFailed"));
+        }
+      }
+      syncControls();
     });
     language.addEventListener("change", () => { this.language = language.value; clearResult(); });
     this.checkTransformScope = () => { if (scopeKey() !== loadedScopeKey) refreshModels(); };
@@ -729,7 +761,7 @@ export class PromptEditor {
     const token = this.wanOpenToken = (this.wanOpenToken || 0) + 1;
     if (this.wanPanel?.persistent) {
       this.body.replaceChildren(this.wanPanel.root);
-      this.wanPanel.checkContext(); this.position(); return;
+      this.wanPanel.checkContext(); this.wanPanel.syncModelPreferences?.(); this.position(); return;
     }
     this.body.replaceChildren(element("p", { className: "ea-prompt-status", textContent: this.t("wanPreparing") }));
     try {
@@ -739,6 +771,7 @@ export class PromptEditor {
         t: this.t, loadModels: this.loadModels, transform: this.transform, resolveMedia: this.resolveMedia,
         getContext: () => ({ ...this.getContext(), prompt: this.current.text, locale: this.getLocale() }),
         preferences: this.wanPreferences,
+        promptModelPreferences: this.promptModelPreferences,
         scopeId: this.tuningScopeId?.(),
         tune: this.videoTuning?.run, resumeTuning: this.videoTuning?.resume,
         cancelTuning: this.videoTuning?.cancel, uploadMedia: this.videoTuning?.upload,

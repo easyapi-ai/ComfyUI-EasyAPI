@@ -24,7 +24,8 @@ export class VideoTunerPanel extends WanTunerPanel {
       end: saved.form.end ?? (saved.form.issue_end >= 0 ? saved.form.issue_end : "") } : null;
     // The node owns its current inputs; a previous preview must not overwrite them.
     if (options.externalRun && form) Object.assign(form, nodeIssueForm(options.getContext()));
-    super({ ...options, preferences: { ...options.preferences, ...form } });
+    super({ ...options, preferences: { ...options.preferences, ...form }, preserveInitialModels: Boolean(saved?.runId),
+      promptModelPreferences: options.externalRun ? undefined : options.promptModelPreferences });
     Object.assign(this, { tune: options.tune, resumeTuning: options.resumeTuning, cancelTuning: options.cancelTuning,
       uploadMedia: options.uploadMedia, externalRun: options.externalRun, scopeId, readOnlyApply: options.readOnlyApply === true });
     this.nodeIssueKey = JSON.stringify(nodeIssueForm(this.getContext()));
@@ -98,14 +99,24 @@ export class VideoTunerPanel extends WanTunerPanel {
       nonce: this.nonce || 0, shape: this.shapeKey };
   }
 
-  fingerprint() {
-    return tuningFingerprint([contextFingerprint(this.getContext()), this.formState(),
+  fingerprint(form = this.formState()) {
+    return tuningFingerprint([contextFingerprint(this.getContext()), form,
       this.addedMedia.map(item => [item.kind, item.filename, item.url || item.previewUrl])]);
+  }
+
+  draftForm() {
+    const form = this.formState();
+    const saved = !this.models && this.modelPreferences.get(form.profileId);
+    if (saved) {
+      form.model = saved.model ?? form.model;
+      form.analysisModel = saved.analysisModel ?? form.analysisModel;
+    }
+    return form;
   }
 
   saveDraft() {
     if (!this.videoReady || !this.scopeId) return;
-    const ok = writeTuningDraft(this.scopeId, { form: this.formState(), completed: this.completed,
+    const ok = writeTuningDraft(this.scopeId, { form: this.draftForm(), completed: this.completed,
       resultOriginal: this.resultOriginal, resultDigest: this.resultDigest, stale: this.resultStale,
       partial: this.partialPrompt?.value || "", attachmentCount: this.addedMedia.length, runId: this.runId,
       activeDigest: this.activeDigest, activeOriginal: this.activeOriginal,
@@ -350,12 +361,12 @@ export class VideoTunerPanel extends WanTunerPanel {
     const request = new AbortController(); this.request = request;
     this.beginProgress(true);
     this.run.disabled = true; this.cancel.hidden = false; this.updateResultControls();
-    const original = this.activeOriginal ?? this.getContext().prompt, digest = this.activeDigest || this.fingerprint();
+    const original = this.activeOriginal ?? this.getContext().prompt, digest = this.activeDigest || this.fingerprint(this.draftForm());
     try {
       const result = await this.resumeTuning(id, request.signal, event => { if (this.request === request && !request.signal.aborted) this.receiveEvent(event); });
       request.signal.throwIfAborted();
       this.runId = null;
-      this.setResult(result, { original, digest, stale: digest !== this.fingerprint() });
+      this.setResult(result, { original, digest, stale: digest !== this.fingerprint(this.draftForm()) });
     } catch (error) {
       if (!request.signal.aborted) { if (!error.pending) this.runId = null; this.failProgress(error); }
     } finally { this.finishRequest(request); }

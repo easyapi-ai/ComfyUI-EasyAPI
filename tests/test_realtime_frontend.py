@@ -16,6 +16,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { pathToFileURL } = require('node:url');
+const { dirname, join } = require('node:path');
 const filename = process.argv[1], workletFilename = process.argv[2], catalogFilename = process.argv[3];
 let code = fs.readFileSync(filename, 'utf8').replace(/^import .*;\r?\n/gm, '');
 code = code.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(filename).href));
@@ -29,7 +30,9 @@ const context = { URL, Float32Array, Uint8Array, DataView, Set, Map, console,
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(catalogFilename, 'utf8').replace(/^export /gm, ''), context);
-vm.runInContext(fs.readFileSync(require('node:path').join(require('node:path').dirname(filename), 'video-tuning-client.js'), 'utf8').replace(/^export /gm, ''), context);
+for (const file of ['video-tuning-client.js', 'prompt-model-preferences.js']) {
+  vm.runInContext(fs.readFileSync(join(dirname(filename), file), 'utf8').replace(/^export /gm, ''), context);
+}
 vm.runInContext(code + '\nglobalThis.testHooks = { RealtimePanel, pcm16Base64 };', context);
 const { RealtimePanel, pcm16Base64 } = context.testHooks;
 const panel = Object.create(RealtimePanel.prototype);

@@ -82,6 +82,7 @@ globalThis.Node=Element;
 globalThis.document={createElement:tag=>new Element(tag),head:new Element('head'),body:new Element('body'),documentElement:{lang:'en'},activeElement:null};
 const storage=new Map();globalThis.localStorage={getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
 const {VideoTunerNodePanel,installVideoTunerNode}=await import(pathToFileURL(process.argv[1]));
+const {createPromptModelPreferences}=await import(new URL('./prompt-model-preferences.js',pathToFileURL(process.argv[1])));
 const fields={profile_id:'p1',text_model:'text-model',analysis_model:'',target_profile_id:'p2',target_model:'wan3.0-video',target_params_json:'{"duration":12,"generate_audio":false}',prompt:'DO NOT FALL BACK TO THIS DEFAULT',domain:'drama',mode:'auto',output:'quick',analyze:true,issue:'',issue_start:-1,issue_end:-1,locale:'en',scope_id:'scope-ui',revision:0};
 const makeNode=(id=7,overrides={})=>{const node={id,type:'EasyAPIVideoPromptTuner',widgets:Object.entries({...fields,...overrides}).map(([name,value])=>({name,value,callback(){}})),inputs:[{name:'prompt',link:4},{name:'image',link:5}],size:[430,740],setDirtyCanvas(){}};node.graph={_nodes:[node],setDirtyCanvas(){},change(){}};return node;};
 const get=(node,name)=>node.widgets.find(item=>item.name===name);
@@ -184,6 +185,31 @@ assert.deepEqual(refreshed.promptModels.map(model=>model.id),['new-permission-mo
 const beforeDispose=catalogCalls;refreshed.dispose();refreshed.dispose();
 assert.equal(disposedCalls,1);assert.equal(windowEvents.get('easyapi:profiles').size,0);assert.equal(windowEvents.get('easyapi:locale').size,0);
 assert.equal(catalogCalls,beforeDispose);
+
+const preferences=createPromptModelPreferences();
+preferences.setFixed('p1','tune','fixed');
+preferences.setFixed('p1','analysis','vision');
+const preferenceServices={...services,promptModelPreferences:preferences,
+ loadPromptModels:async()=>[{id:'fixed'},{id:'alternate'},{id:'vision',supports_image:true}]};
+const freshNode=makeNode(35,{scope_id:'fresh',text_model:'',analysis_model:''});
+const freshPanel=new VideoTunerNodePanel(freshNode,preferenceServices);await tick();
+assert.equal(get(freshNode,'text_model').value,'fixed');
+assert.equal(get(freshNode,'analysis_model').value,'vision');
+freshPanel.chooseModel('text_model','alternate');freshPanel.chooseModel('target_model','other-video');
+assert.equal(preferences.get('p1','tune').recent,'alternate');
+assert.equal(preferences.get('p2','tune').recent,undefined,'generation model is not a tuning preference');
+await freshPanel.refreshModels(true);
+assert.equal(get(freshNode,'text_model').value,'alternate','global defaults seed blank fields only');
+const savedNode=makeNode(36,{scope_id:'existing',text_model:'stored-model',analysis_model:''});
+const savedPanel=new VideoTunerNodePanel(savedNode,preferenceServices);
+savedPanel.configure();await tick();
+assert.equal(get(savedNode,'text_model').value,'stored-model');
+assert.equal(get(savedNode,'analysis_model').value,'','loading a workflow never adds the global analysis model');
+const linkedNode=makeNode(37,{scope_id:'linked',text_model:'',analysis_model:''});
+linkedNode.inputs.push({name:'text_model',link:10},{name:'analysis_model',link:11});
+const linkedPanel=new VideoTunerNodePanel(linkedNode,preferenceServices);await tick();
+assert.equal(get(linkedNode,'text_model').value,'');assert.equal(get(linkedNode,'analysis_model').value,'');
+freshPanel.dispose();savedPanel.dispose();linkedPanel.dispose();
 ''')
 
 

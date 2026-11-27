@@ -222,7 +222,11 @@ const api = { async fetchApi(address, options = {}) {
     data = { pricing: { mode: 'second', currency: 'USD', rates: { second: 0.1 }, discount: 0.5 },
       ...(facts.duration ? { estimate: { amount: facts.duration / 10, currency: 'USD' } } : { reason: 'missing_usage' }) };
   }
-  else if (url.pathname === '/easyapi/prompt/models') data = { models: [{ id: 'prompt-text' }] };
+  else if (url.pathname === '/easyapi/prompt/models') {
+    const profile = url.searchParams.get('profile_id');
+    if (fixtures.deniedPromptProfile === profile) return { ok: false, status: 403, text: async () => 'Model permissions unavailable' };
+    data = { models: fixtures.promptModels?.[profile] || [{ id: 'prompt-text' }] };
+  }
   else if (url.pathname === '/easyapi/prompt/transform') data = { text: 'improved prompt' };
   else if (url.pathname === '/easyapi/tasks') data = { tasks: [] };
   else if (url.pathname === '/easyapi/presets') data = { presets: fixtures.presets.filter((preset) => preset.profile_id === url.searchParams.get('profile_id') && (!url.searchParams.get('operation') || preset.operation === url.searchParams.get('operation'))), default_preset_ids: fixtures.defaultPresets };
@@ -237,7 +241,7 @@ const context = { document, app, api, window, Node: FakeNode, URL, URLSearchPara
   navigator: {}, location: { href: 'https://comfy.test/', protocol: 'https:' },
 };
 vm.createContext(context);
-for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'model-catalog.js', 'node-billing.js', 'video-tuning-state.js', 'video-tuning-client.js', 'video-tuner-node.js', 'easyapi.js']) {
+for (const file of ['ui-state.js', 'ui-forms.js', 'ui-i18n.js', 'profile-panel.js', 'preset-panel.js', 'prompt-editor.js', 'prompt-model-preferences.js', 'prompt-settings-panel.js', 'model-catalog.js', 'node-billing.js', 'video-tuning-state.js', 'video-tuning-client.js', 'video-tuner-node.js', 'easyapi.js']) {
   const filename = path.join(process.argv[2], file);
   const original = fs.readFileSync(filename, 'utf8');
   const names = [...original.matchAll(/^export (?:const|function|class) (\w+)/gm)].map((match) => match[1]);
@@ -770,7 +774,73 @@ const findInput = (panel, pathValue) => descendants(panel.schema).find((element)
   const firstRoot = sidebarContainer.children[0];
   await app.extension.commands.find((command) => command.id === 'EasyAPI.OpenManager').function(); await tick();
   assert.equal(toggles, 1); assert.equal(sidebarContainer.children[0], firstRoot);
-  assert.equal(app.extension.menuCommands[0].path[0], 'EasyAPI'); app.sidebar.destroy();
+  assert.equal(app.extension.menuCommands[0].path[0], 'EasyAPI');
+
+  const storage = new Map();
+  context.localStorage = { getItem: key => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
+  const preferences = context.createPromptModelPreferences();
+  preferences.remember('p1', 'optimize', 'chat');
+  fixtures.profiles = fixtures.profiles.map(profile => ({ ...profile, model_catalog_revision: profile.model_catalog_revision + '-settings' }));
+  fixtures.promptModels = { p1: [{ id: 'chat' }, { id: 'vision', supports_image: true }], p2: [{ id: 'other' }] };
+  defaultProfile = 'p1';
+  const sidebar = h.getProfileManager();
+  await sidebar.refresh();
+  assert.equal(sidebar.promptSettingsPanel.root.hidden, true);
+  sidebar.promptSettingsTab.fire('click'); await tick();
+  const settings = sidebar.promptSettingsPanel;
+  const { optimize, tune, analysis } = settings.modelFields;
+  const choose = (field, value) => { field.input.value = value; field.input.fire('change'); };
+  const values = field => field.input.children.map(option => option.value);
+  assert.equal(sidebar.promptSettingsTab.getAttribute('aria-selected'), 'true');
+  assert.equal(settings.profile.value, 'p1');
+  assert.equal(optimize.input.firstElementChild.textContent, 'Automatic · chat');
+  assert.deepEqual(values(optimize), ['auto', 'model:chat', 'model:vision']);
+  assert.deepEqual(values(analysis), ['auto', 'text', 'model:vision']);
+  choose(optimize, 'model:vision'); choose(tune, 'model:chat'); choose(analysis, 'text');
+  assert.equal(preferences.get('p1', 'optimize').fixed, 'vision');
+  assert.equal(preferences.get('p1', 'tune').fixed, 'chat');
+  assert.equal(preferences.get('p1', 'analysis').fixed, '');
+
+  settings.profile.value = 'p2'; settings.profile.fire('change'); await tick();
+  assert.equal(optimize.input.value, 'auto');
+  assert.deepEqual(values(optimize), ['auto', 'model:other']);
+  assert.deepEqual(values(analysis), ['auto', 'text']);
+  choose(optimize, 'model:other');
+  assert.equal(preferences.get('p2', 'optimize').fixed, 'other');
+  settings.profile.value = 'p1'; settings.profile.fire('change'); await tick();
+  assert.equal(optimize.input.value, 'model:vision');
+  assert.equal(analysis.input.value, 'text');
+
+  fixtures.deniedPromptProfile = 'p1';
+  await settings.refreshModels(true);
+  assert.deepEqual(values(optimize), ['auto', 'model:vision']);
+  assert.equal(optimize.input.lastElementChild.disabled, true);
+  assert.equal(settings.retry.hidden, false);
+  assert.match(settings.catalogStatus.textContent, /permissions unavailable/);
+  assert.equal(preferences.get('p1', 'optimize').fixed, 'vision');
+  fixtures.deniedPromptProfile = undefined;
+  fixtures.promptModels.p1 = [{ id: 'chat' }];
+  settings.retry.fire('click'); await tick();
+  assert.equal(optimize.input.value, 'model:vision');
+  assert.match(optimize.input.lastElementChild.textContent, /vision is unavailable/);
+  choose(optimize, 'auto');
+  assert.equal(preferences.get('p1', 'optimize').fixed, undefined);
+  assert.equal(preferences.get('p1', 'optimize').recent, 'chat');
+
+  const currentCatalog = settings.modelRequest;
+  sidebar.connectionTab.fire('click');
+  assert.equal(currentCatalog.signal.aborted, true);
+  assert.equal(settings.root.hidden, true);
+  app.sidebar.destroy(); active = false;
+  await h.openProfiles('p1', 'promptSettings'); await tick();
+  const restoredSettings = h.getProfileManager().promptSettingsPanel;
+  assert.equal(restoredSettings.modelFields.optimize.input.value, 'auto');
+  assert.equal(restoredSettings.modelFields.tune.input.value, 'model:chat');
+  assert.equal(restoredSettings.modelFields.analysis.input.value, 'text');
+  locale = 'zh'; h.getProfileManager().translate(); await tick();
+  assert.equal(h.getProfileManager().promptSettingsTab.textContent, '提示词设置');
+  app.sidebar.destroy();
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 '''
         result = subprocess.run([shutil.which("node"), "-", str(Path(__file__).parents[1] / "web")],

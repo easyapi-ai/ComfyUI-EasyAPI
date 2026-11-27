@@ -71,6 +71,8 @@ Node names, ports, and controls follow ComfyUI's language setting. The extension
 
 ### Prompt editor and Wan tuning
 
+Open **EasyAPI sidebar → Prompt settings** to set default models for prompt optimization, video prompt tuning, and media analysis on each connection. With **Remember last selection**, the prompt tools and new tuner nodes reuse your last manual choice. The browser keeps these preferences across refreshes and workflows on the same ComfyUI site.
+
 Add **EasyAPI Video Prompt Tuner** to the canvas and connect its prompt output to a video node's prompt input. Choose the tuning connection and text/analysis models separately from the target video's connection, model and parameters. You can copy settings from one selected EasyAPI Video node when those settings are local values rather than connected inputs.
 
 **Tune this node** runs the tuner and its required upstream nodes, without running downstream video generation. Upstream image, audio or video generators can still run and incur charges. Connected prompts and media resolve from their actual upstream results; widget defaults never substitute for linked values. Tuning output does not replace the original prompt. Analysis and the structured result have separate outputs.

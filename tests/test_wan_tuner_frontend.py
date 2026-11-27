@@ -40,6 +40,7 @@ globalThis.document={createElement:tag=>new Element(tag),body:new Element('body'
 const copied=[];
 Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>copied.push(text)}}});
 const { WanTunerPanel,contextFingerprint }=await import(pathToFileURL(process.argv[1]));
+const { createPromptModelPreferences }=await import(new URL('./prompt-model-preferences.js',pathToFileURL(process.argv[1])));
 const knowledge=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const source={facts:['@图片1 shows one actor'],uncertainties:[],invariants:['counter edge stays straight']};
@@ -79,6 +80,28 @@ const make=async transform=>{
   panel.model.value='chat-small';panel.changed();
   await panel.refreshModels();
   assert.equal(panel.model.value,'chat-small','Refreshing the same connection preserves its model choice');
+ } finally {panel.dispose();}
+}
+{
+ const stored=new Map();
+ const preferences=createPromptModelPreferences(()=>({getItem:key=>stored.get(key),setItem:(key,value)=>stored.set(key,value)}));
+ preferences.setFixed('p1','tune','fixed');
+ let update;
+ const rows=[{id:'fixed'},{id:'alternate'}];
+ const context={profileId:'p1',modelId:'wan3.0-video',prompt:'Read.',params:{},profiles:[{id:'p1'}]};
+ const panel=new WanTunerPanel({t:(key,values)=>values?.model || key,getContext:()=>context,promptModelPreferences:preferences,
+  loadModels:async(id,signal,onUpdate)=>{update=onUpdate;return rows;},onApply(){}});
+ try {
+  await tick();
+  assert.equal(panel.model.value,'fixed');
+  update({models:[{id:'alternate'}]});
+  assert.equal(panel.model.value,'','A removed fixed model does not select a different model');
+  assert.equal(panel.modelPreferenceStatus.textContent,'fixed');
+  update({models:[...rows]});
+  assert.equal(panel.model.value,'','A later notification does not silently reselect the dropped model');
+  assert.equal(panel.modelPreferenceStatus.hidden,true);
+  panel.syncModelPreferences();
+  assert.equal(panel.model.value,'fixed','Reopening can use the restored fixed model');
  } finally {panel.dispose();}
 }
 {
